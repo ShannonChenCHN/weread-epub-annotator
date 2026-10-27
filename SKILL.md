@@ -53,9 +53,10 @@ python3 ~/.workbuddy/skills/weread-epub-preview/scripts/weread_preview.py <book.
   顶栏 `sticky` 吸附顶部、滚动全程不动（窄屏媒体查询里把 `html,body` 放开为 `height:auto`，
   否则 body 被全局 `height:100%` 锁成一屏高，滚动超过一屏后顶栏会被「拽走」）。
 - **选中即批注（内置，默认开）**：预览页默认带「✏️ 标注 / 📋 批注(n)」两个顶栏按钮。
-  开启「✏️ 标注」后，在正文用鼠标选中文字或图片即可弹批注框（严重级 P1/P2/P3 + 文字/图片/版式 + 备注），
-  按「源 xhtml 路径 + 文字片段 + 最近标题」定位（源码无 id 也能反查），存 localStorage，换章自动重绘高亮；
-  「📋 批注」面板可跳转定位、导出 JSON、导出「给 agent 的 MD 任务清单」、清空。
+  开启「✏️ 标注」后，在正文用鼠标选中文字或图片即可弹批注框（类型 文字/图片/版式 + 备注），
+  按「源 xhtml 路径 + 文字片段 + 最近标题」定位（源码无 id 也能反查），存 localStorage，换章自动重绘左侧蓝色标记；
+  「📋 批注」面板每条右侧有「✏️ 编辑 / 🗑 删除」按钮（编辑复用弹窗改备注与类型，删除直接撤掉标记与计数），
+  面板还支持跳转定位、导出 JSON、导出「给 agent 的 MD 任务清单」、清空。
   由 `--annotate`（默认开）/ `--no-annotate`（纯预览）控制；历史预览仍可用配套 `inject_annotate.py` 后处理注入。
   批注层只改预览页 HTML，**不碰 EPUB 源**；重跑预览会清掉注入层，但 localStorage 里的批注数据仍在浏览器侧。
 - 静态体检报告仍会生成 `weread-report.md` / `weread-report.json`（见上方产出表），只是预览页内不再内置报告抽屉。
