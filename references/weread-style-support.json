@@ -1,0 +1,352 @@
+{
+  "schema_version": "1.0",
+  "target": {
+    "reader": "微信读书 App（WeRead）",
+    "verification": "真机逐屏实测（截图判读 + 像素级测量）",
+    "engine_note": "自研 DTCoreText 排版引擎，非 WebView",
+    "format": "EPUB3（本地导入）"
+  },
+  "generated_from": "docs/weread-epub-style-support.md",
+  "updated": "2026-10-04",
+  "status_values": {
+    "allowed": "可放心使用：实测稳定生效",
+    "gray": "不稳定：可能生效也可能失效，应使用 alternative 兜底",
+    "dead": "不要使用：实测无效或有害，必须改用 alternative"
+  },
+  "evidence_grades": {
+    "A": "官方文档 / 一手实测强证据",
+    "B": "多次实测一致",
+    "C": "单次实测 + 交叉验证",
+    "D": "单次实测、结论较保守"
+  },
+  "summary_global": [
+    "外部 style.css 会被解析，但引擎只稳定认「扁平单类名」这一种写法；后代选择器、伪类/伪元素、@media 不可靠，连内联 style 属性都会被拆掉。",
+    "text-indent 与 line-height 被 App 全局设置（正文首行缩进 / 行距）接管，CSS 里写了也无效。",
+    "结构型元素基本可用（标题阶梯、列表、表格、代码块、引用块、图片等比缩放、上下标、链接、emoji）；明确死区集中在三处：硬分页（只能拆 spine 文件）、EPUB3 弹注、章内锚点跳转（点角标无反应）。"
+  ],
+  "rules": [
+    {
+      "id": "R01",
+      "feature": "首行缩进",
+      "css": "text-indent",
+      "status": "dead",
+      "reason": "被 App 全局「正文首行缩进」接管，连 text-indent:0 都被缩进",
+      "alternative": "交给 App 全局设置，CSS 不写",
+      "evidence": "A",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "像素实测：2em 段与 text-indent:0 段首行左缘同为 224px（续行 156px）",
+      "evidence_image": "evidence/screenshots/p01-text-indent.png"
+    },
+    {
+      "id": "R02",
+      "feature": "行距",
+      "css": "line-height",
+      "status": "dead",
+      "reason": "被 App 全局「行距」接管",
+      "alternative": "交给 App 全局设置，CSS 不写",
+      "evidence": "B",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "line-height:1.2 与 2.4 视觉几乎无差别"
+    },
+    {
+      "id": "R03",
+      "feature": "字号单位",
+      "css": "font-size 用 px",
+      "status": "dead",
+      "reason": "px 被当固定值压回正文大小",
+      "alternative": "改用 em / rem / % / pt（四档实测均生效）",
+      "evidence": "A",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "16px 档与正文无异"
+    },
+    {
+      "id": "R04",
+      "feature": "字体族",
+      "css": "font-family",
+      "status": "gray",
+      "reason": "走内置字体识别（白名单式）：单一自造名与系统字体名回退全局，只有已知字体栈里的楷体名可生效",
+      "alternative": "引语/注释区换楷体时，整串复制 font_stacks.kaiti_replica",
+      "evidence": "C",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "实测：单独写「汉仪楷体S」或 Kaiti SC/STKaiti/KaiTi 均与基准无差别；整串复刻栈渲染出楷体+棕色。对照截图：p17-ff-baseline.png（基准+单名无效）、p17-ff-system-names.png（系统字体名无效）",
+      "evidence_image": "evidence/screenshots/p17-ff-quote-replica.png"
+    },
+    {
+      "id": "R05",
+      "feature": "复杂选择器",
+      "css": "后代 / 伪类 / 伪元素 / @media",
+      "status": "gray",
+      "reason": "生效不稳定：时而只有 color 生效，时而 color+font-size 都生效",
+      "alternative": "一律改写成扁平单类名",
+      "evidence": "A",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "R06",
+      "feature": "内联样式",
+      "css": "[style] 属性",
+      "status": "dead",
+      "reason": "会被拆掉，不能用来兜底",
+      "alternative": "扁平单类名",
+      "evidence": "A",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "本轮最反直觉的发现"
+    },
+    {
+      "id": "R07",
+      "feature": "图片尺寸",
+      "css": "img 的 style 定宽/限宽/定高",
+      "status": "dead",
+      "reason": "不生效（60% / 70% / 200px 实测均无效）",
+      "alternative": "出图时把尺寸定死成像素",
+      "evidence": "C",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "R08",
+      "feature": "图片居中",
+      "css": "figure / margin:0 auto",
+      "status": "gray",
+      "reason": "figure 内的 img 仍靠左（figcaption 文字居中可生效）",
+      "alternative": "把居中直接画进图片像素",
+      "evidence": "D",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "R09",
+      "feature": "图文绕排",
+      "css": "float / clear",
+      "status": "gray",
+      "reason": "语法层生效（文字让位、clear 换行），但被 float 的图片本体不渲染",
+      "alternative": "改为上下排列",
+      "evidence": "D",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "R10",
+      "feature": "硬分页",
+      "css": "page-break-after / break-inside",
+      "status": "dead",
+      "reason": "不触发起新页；同文件双 h2 也不分页",
+      "alternative": "拆成独立 spine 文件",
+      "evidence": "A",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "R11",
+      "feature": "注释 / 弹注 / 锚点跳转",
+      "css": "epub:type=footnote / href=\"#id\"",
+      "status": "dead",
+      "reason": "EPUB3 弹注内容平铺成普通段落；自制书的章内锚点点击无反应（商店书能跳不等于自制书能跳）",
+      "alternative": "短注行内小字夹注；长注放章末且角标只作视觉标记，不做跳转",
+      "evidence": "C",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "面向多平台发布时仍可写规范 aside epub:type=footnote，微信读书里退化为章末注",
+      "evidence_image": "evidence/screenshots/p14-footnote.png"
+    },
+    {
+      "id": "R12",
+      "feature": "危险布局",
+      "css": "flex / transform / text-shadow",
+      "status": "dead",
+      "reason": "均无效（flex 掉成上下堆叠）",
+      "alternative": "普通块级元素 + 扁平单类名",
+      "evidence": "D",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "evidence/screenshots/p16-dangerous-elements.png"
+    },
+    {
+      "id": "R13",
+      "feature": "小型大写",
+      "css": "font-variant: small-caps",
+      "status": "dead",
+      "reason": "无效",
+      "alternative": "直接写大写字母",
+      "evidence": "D",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "R14",
+      "feature": "生僻字",
+      "css": "CJK 扩展 B 区字符",
+      "status": "dead",
+      "reason": "渲染成豆腐块",
+      "alternative": "避免使用，或转成图片",
+      "evidence": "D",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "例：𠮷"
+    },
+    {
+      "id": "A01",
+      "feature": "颜色与背景",
+      "css": "background / color（扁平单类名）",
+      "status": "allowed",
+      "reason": "稳定生效",
+      "alternative": "—",
+      "evidence": "A",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "A02",
+      "feature": "文本居中",
+      "css": "text-align:center（扁平单类名）",
+      "status": "allowed",
+      "reason": "文字居中生效",
+      "alternative": "—",
+      "evidence": "A",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "A03",
+      "feature": "字距",
+      "css": "letter-spacing",
+      "status": "allowed",
+      "reason": "明显生效（如 .25em）",
+      "alternative": "—",
+      "evidence": "B",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "A04",
+      "feature": "标题阶梯",
+      "css": "h1–h4 字号/字重/字距",
+      "status": "allowed",
+      "reason": "四档阶梯整条可用",
+      "alternative": "—",
+      "evidence": "C",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "evidence/screenshots/p03-heading-ladder.png"
+    },
+    {
+      "id": "A05",
+      "feature": "列表",
+      "css": "ul / ol 嵌套、中文序号、悬挂缩进、list-style:none",
+      "status": "allowed",
+      "reason": "列表全家可用",
+      "alternative": "—",
+      "evidence": "C",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "evidence/screenshots/p04-list.png"
+    },
+    {
+      "id": "A06",
+      "feature": "表格",
+      "css": "table / caption / colspan / 多列宽表",
+      "status": "allowed",
+      "reason": "原生 HTML 生产可用：边框、表头、caption、colspan、12 列超宽表、单元格长 URL 均不溢出",
+      "alternative": "—",
+      "evidence": "C",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "字号会被压小；不必为求稳全改图片",
+      "evidence_image": "evidence/screenshots/p09-table.png"
+    },
+    {
+      "id": "A07",
+      "feature": "代码",
+      "css": "pre / code / word-break:break-all",
+      "status": "allowed",
+      "reason": "pre 保留行首空格，行内 code 等宽灰底",
+      "alternative": "—",
+      "evidence": "B",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "A08",
+      "feature": "图片缩放",
+      "css": "img（不带尺寸样式）",
+      "status": "allowed",
+      "reason": "按版心宽等比缩放、不裁切（含超大图）",
+      "alternative": "—",
+      "evidence": "C",
+      "platforms": [
+        "weread"
+      ],
+      "notes": "evidence/screenshots/p06-image-scale.png"
+    },
+    {
+      "id": "A09",
+      "feature": "引用块",
+      "css": "blockquote（border-left + margin/padding）",
+      "status": "allowed",
+      "reason": "左灰竖线 + 缩进 + 灰化小字均可渲染，显式 margin/padding 生效",
+      "alternative": "仍建议用扁平单类名实现",
+      "evidence": "D",
+      "platforms": [
+        "weread"
+      ]
+    },
+    {
+      "id": "A10",
+      "feature": "分割线与上下标",
+      "css": "hr / border-top / sup / sub / emoji",
+      "status": "allowed",
+      "reason": "均正常（裸 hr 为细灰线、border-top 可做虚线）",
+      "alternative": "—",
+      "evidence": "B",
+      "platforms": [
+        "weread"
+      ]
+    }
+  ],
+  "font_stacks": {
+    "kaiti_replica": "\"汉仪楷体S\",\"ETrump KaiTi\",\"方正仿宋\",\"FZFSJW--GB1-0\",\"PingFang SC\",-apple-system,\"SF UI Text\",\"Lucida Grande\",STheiti,\"Microsoft YaHei\",sans-serif",
+    "usage": "引语/注释区想换楷体时，把 kaiti_replica 整串抄进扁平单类名的 font-family；不要只写其中某一个字体名。",
+    "note": "字体名只在 CSS 里声明，不随书分发字体文件。"
+  },
+  "checklist": [
+    "所有样式都是扁平单类名，且没有内联 style 属性",
+    "CSS 里没有 text-indent / line-height / px 字号 / 单一字体名依赖",
+    "图片尺寸已按目标版心定死像素，需要居中的直接画进图片",
+    "需要硬分页的地方已拆成独立 spine 文件",
+    "注释已改为行内小字注或纯视觉章末注，不依赖 epub:type 弹注与 href=\"#id\" 跳转",
+    "表格保留原生 HTML（没有无谓地转成图片）",
+    "全稿无 flex / transform / text-shadow / small-caps，无 CJK 扩展 B 区生僻字"
+  ],
+  "how_to_use": {
+    "for_agents": "见仓库根目录 AGENTS.md",
+    "for_humans": "见 README.md 与 docs/weread-epub-style-support.md",
+    "specimen": "epub/weread-epub-style-specimen-1.0.epub（17 章 / 78 个探针，可自行导入微信读书复核结论）"
+  }
+}

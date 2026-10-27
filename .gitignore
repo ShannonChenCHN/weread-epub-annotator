@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local preview build output (generated, not part of the skill source)
+*.preview/
+.unpack.json
