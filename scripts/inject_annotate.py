@@ -52,8 +52,10 @@ CSS = r"""
 .anno-pop .save{background:#3b6df5;color:#fff;border:1px solid #3b6df5;border-radius:6px;padding:4px 12px;cursor:pointer;font:inherit}
 .anno-pop .cancel{background:#fff;border:1px solid #e3e5e9;border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit}
 .anno-pop .meta{color:#8b9098;font-size:11px}
-/* 顶栏「✏️ 标注」按钮：选中态与「说明」按钮 .mtoggle[aria-pressed=true] 完全一致 */
+/* 顶栏「标注」按钮：选中态与「说明」按钮 .mtoggle[aria-pressed=true] 完全一致 */
 .btn-anno-mode[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:rgba(59,109,245,.08)}
+/* 顶栏按钮内的 SVG 图标：与文字基线对齐、随按钮文字色（含选中态）变化 */
+.topbar .btn svg{width:14px;height:14px;vertical-align:-2px;margin-right:4px}
 .anno-panel{position:fixed;top:0;right:0;height:100%;width:330px;background:#fff;color:#1c1f24;
   border-left:1px solid #e3e5e9;box-shadow:-8px 0 24px rgba(0,0,0,.12);z-index:9998;display:none;
   flex-direction:column;font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
@@ -178,14 +180,18 @@ JS = r"""
 
   var annoMode=true, curType='文字', pendingCtx=null, editingId=null;
   var bList=null;
+  /* 内联 SVG 图标（Lucide/Feather 风，stroke=currentColor，随 hover 变色，无需外部资源） */
+  var SVG_EDIT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+  var SVG_DEL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+  var SVG_LIST='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
 
   /* ---- 顶栏按钮（兼容新旧两版顶栏，直接挂到 .topbar，窄屏也可见） ---- */
   var topbar=document.querySelector('.topbar');
   if(topbar){
-    var bMode=document.createElement('button'); bMode.className='btn btn-anno-mode'; bMode.textContent='✏️ 标注';
+    var bMode=document.createElement('button'); bMode.className='btn btn-anno-mode'; bMode.innerHTML=SVG_EDIT+' 标注';
     bMode.style.marginLeft='auto';
     bMode.setAttribute('aria-pressed', annoMode ? 'true' : 'false');
-    bList=document.createElement('button'); bList.className='btn'; bList.textContent='📋 批注(0)';
+    bList=document.createElement('button'); bList.className='btn'; bList.innerHTML=SVG_LIST+' 批注(0)';
     bMode.onclick=function(){annoMode=!annoMode; bMode.setAttribute('aria-pressed', annoMode ? 'true' : 'false'); if(!annoMode) hidePop();};
     bList.onclick=function(){document.body.classList.remove('navopen','infoopen'); var p=document.getElementById('annoPanel'); p.classList.toggle('open'); renderList(); syncBackdrop();};
     topbar.appendChild(bMode); topbar.appendChild(bList);
@@ -385,10 +391,7 @@ JS = r"""
 
   /* ---- 列表 / 导出 ---- */
   function esc(s){return (''+s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
-  function updateCount(){if(bList)bList.textContent='📋 批注('+load().length+')';}
-  /* 内联 SVG 图标（Lucide/Feather 风，stroke=currentColor，随 hover 变色，无需外部资源） */
-  var SVG_EDIT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
-  var SVG_DEL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+  function updateCount(){if(bList)bList.innerHTML=SVG_LIST+' 批注('+load().length+')';}
   function findAnno(id){var arr=load(); for(var i=0;i<arr.length;i++){ if(arr[i].id===id) return arr[i]; } return null;}
   /* 编辑：复用弹窗，预填备注+类型；保存时 annoSave 走「更新」分支（不再新建） */
   function startEdit(anno){
@@ -410,7 +413,7 @@ JS = r"""
   }
   function renderList(){
     var list=document.getElementById('annoList'); var annos=load();
-    if(!annos.length){list.innerHTML='<div class="anno-empty">暂无批注。<br>打开「✏️ 标注」，在正文选中文字/图片即可批注。</div>'; updateCount(); return;}
+    if(!annos.length){list.innerHTML='<div class="anno-empty">暂无批注。<br>打开「标注」，在正文选中文字/图片即可批注。</div>'; updateCount(); return;}
     var groups={}; annos.forEach(function(a){(groups[a.file]=groups[a.file]||[]).push(a);});
     var html='';
     Object.keys(groups).forEach(function(f){
