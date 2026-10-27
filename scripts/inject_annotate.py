@@ -66,13 +66,17 @@ CSS = r"""
 .anno-panel .list{overflow:auto;padding:8px 10px 40px;flex:1}
 .anno-grp{margin:0 0 10px}
 .anno-grp h4{margin:6px 2px;font-size:12px;color:#61666e;word-break:break-all}
-.anno-item{border:1px solid #e3e5e9;border-radius:8px;padding:7px 9px;margin:0 0 7px;cursor:pointer}
+.anno-item{position:relative;border:1px solid #e3e5e9;border-radius:8px;padding:7px 54px 7px 9px;margin:0 0 7px;cursor:pointer}
 .anno-item:hover{background:#f6f8ff}
-.anno-item .badge{display:inline-block;font-size:11px;padding:0 7px;border-radius:99px;color:#fff;margin-right:6px}
-.anno-item .badge.P1{background:#e5484d}.anno-item .badge.P2{background:#f5a623}.anno-item .badge.P3{background:#9aa0a6}
+.anno-item .badge{display:inline-block;font-size:11px;padding:0 7px;border-radius:99px;color:#61666e;background:#eef1f6;margin-right:6px}
 .anno-item .snip{color:#1c1f24;font-weight:600}
 .anno-item .cm{color:#61666e;margin-top:3px;white-space:pre-wrap;word-break:break-word}
 .anno-item .metaline{color:#8b9098;font-size:11px;margin-top:3px}
+/* 每条右侧编辑/删除按钮：悬浮显现，点按钮不触发整条跳转 */
+.anno-item .acts{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0;transition:opacity .15s}
+.anno-item:hover .acts{opacity:1}
+.anno-item .acts button{border:1px solid #e3e5e9;background:#fff;border-radius:6px;width:24px;height:24px;line-height:1;padding:0;cursor:pointer;font-size:13px}
+.anno-item .acts button:hover{border-color:#3b6df5;color:#3b6df5}
 .anno-empty{color:#8b9098;text-align:center;margin-top:30px;line-height:1.8}
 @media (max-width:900px){
   /* 窄屏抽屉化：从右侧滑入 + 半透明蒙层（与目录抽屉交互一致） */
@@ -102,9 +106,6 @@ HTML = r"""
 <div class="anno-pop" id="annoPop" style="display:none">
   <textarea id="annoText" placeholder="这里写要改什么…（可留空，仅标记位置）"></textarea>
   <div class="row">
-    <div class="seg" id="annoSev">
-      <button data-v="P1">P1</button><button data-v="P2" class="on">P2</button><button data-v="P3">P3</button>
-    </div>
     <div class="seg" id="annoType">
       <button data-v="文字" class="on">文字</button><button data-v="图片">图片</button><button data-v="版式">版式</button>
     </div>
@@ -127,7 +128,15 @@ JS = r"""
   'use strict';
   var LS_KEY='wr-anno-v1';
   var STORE=(function(){try{var s=window.localStorage;return{get:function(k){try{return s.getItem(k);}catch(e){return null;}},set:function(k,v){try{s.setItem(k,v);}catch(e){}}};}catch(e){return{get:function(){return null;},set:function(){}};}})();
-  function load(){try{return JSON.parse(STORE.get(LS_KEY)||'[]')||[];}catch(e){return[];}}
+  function genId(){return 'a'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+  function load(){
+    var a; try{a=JSON.parse(STORE.get(LS_KEY)||'[]')||[];}catch(e){a=[];}
+    /* 迁移：给旧批注（无 id）补 id，便于编辑/删除按 id 精确命中 */
+    var changed=false;
+    for(var i=0;i<a.length;i++){ if(!a[i].id){ a[i].id=genId(); changed=true; } }
+    if(changed) save(a);
+    return a;
+  }
   function save(a){STORE.set(LS_KEY,JSON.stringify(a));}
 
   var HOST=document.getElementById('wr-host');
@@ -139,10 +148,7 @@ JS = r"""
      这正是之前"整块高亮看不到"的根因。引擎每次 build() 会清空 shadow 子节点，
      故用 MutationObserver 在重建后再注入。 */
   var ANNO_SHADOW_CSS =
-    '.wr-anno-mark{box-shadow:inset 3px 0 0 #c9ccd1}' +
-    '.wr-anno-mark[data-sev="P1"]{box-shadow:inset 3px 0 0 #e5484d}' +
-    '.wr-anno-mark[data-sev="P2"]{box-shadow:inset 3px 0 0 #f5a623}' +
-    '.wr-anno-mark[data-sev="P3"]{box-shadow:inset 3px 0 0 #9aa0a6}' +
+    '.wr-anno-mark{box-shadow:inset 3px 0 0 #3b6df5}' +
     '.wr-anno-flash{background:#ffd54a;border-radius:2px;animation:wrAnnoFlash 2.6s ease-out forwards}' +
     '.wr-anno-flash-block{animation:wrAnnoFlash 2.6s ease-out forwards}' +
     '@keyframes wrAnnoFlash{0%{background:#ffd54a}55%{background:#ffe9a8}100%{background:rgba(255,213,74,0)}}';
@@ -168,7 +174,7 @@ JS = r"""
     return -1;
   }
 
-  var annoMode=true, curSev='P2', curType='文字', pendingCtx=null;
+  var annoMode=true, curType='文字', pendingCtx=null, editingId=null;
   var bList=null;
 
   /* ---- 顶栏按钮（兼容新旧两版顶栏，直接挂到 .topbar，窄屏也可见） ---- */
@@ -203,6 +209,7 @@ JS = r"""
 
   /* ---- 选区 -> 批注上下文 ---- */
   function onSelect(){
+    editingId=null;   /* 进入新建态，避免复用上一次的编辑态 */
     if(!annoMode)return;
     var sel=getSel();
     if(!sel||sel.isCollapsed||!sel.rangeCount){hidePop();return;}
@@ -221,6 +228,7 @@ JS = r"""
       context:{nearestHeading:nearestHeading(block,sec), elemTag:block?block.tagName.toLowerCase():'',
         elemClass:block&&block.className?(''+block.className):'', figIndex:figIndexOf(block,sec)}};
     var pop=document.getElementById('annoPop'); pop.style.display='block';
+    document.getElementById('annoSave').textContent='保存';
     var r=range.getBoundingClientRect();
     var x=Math.min(r.left, window.innerWidth-300), y=r.bottom+8;
     if(y>window.innerHeight-220)y=r.top-226;
@@ -228,24 +236,29 @@ JS = r"""
     document.getElementById('annoLoc').textContent=(ch.title||'')+' · '+(pendingCtx.context.nearestHeading||'(章首)');
     document.getElementById('annoText').focus();
   }
-  function hidePop(){var p=document.getElementById('annoPop'); if(p)p.style.display='none'; pendingCtx=null;}
+  function hidePop(){var p=document.getElementById('annoPop'); if(p)p.style.display='none'; pendingCtx=null; editingId=null;}
 
-  function setSev(v){curSev=v; markSeg('annoSev',v);}
   function setType(v){curType=v; markSeg('annoType',v);}
   function markSeg(id,v){var box=document.getElementById(id); if(!box)return; var bs=box.querySelectorAll('button'); for(var i=0;i<bs.length;i++){bs[i].classList.toggle('on',bs[i].dataset.v===v);}}
 
-  document.getElementById('annoSev').addEventListener('click',function(e){if(e.target.dataset&&e.target.dataset.v)setSev(e.target.dataset.v);});
   document.getElementById('annoType').addEventListener('click',function(e){if(e.target.dataset&&e.target.dataset.v)setType(e.target.dataset.v);});
   document.getElementById('annoCancel').onclick=hidePop;
   document.getElementById('annoSave').onclick=function(){
-    if(!pendingCtx)return;
     var text=document.getElementById('annoText').value.trim();
     var annos=load();
-    annos.push({file:pendingCtx.file, chapterTitle:pendingCtx.chapterTitle, chapterIdx:pendingCtx.chapterIdx,
-      snippet:pendingCtx.snippet, selectedText:pendingCtx.selectedText, context:pendingCtx.context,
-      comment:text, severity:curSev, type:curType, createdAt:new Date().toISOString()});
-    save(annos); hidePop();
-    if(window.getSelection)window.getSelection().removeAllRanges();
+    if(editingId){
+      /* 编辑态：按 id 原地更新备注 + 类型（不改锚点/位置） */
+      for(var k=0;k<annos.length;k++){ if(annos[k].id===editingId){ annos[k].comment=text; annos[k].type=curType; break; } }
+      save(annos); editingId=null; hidePop();
+    } else {
+      /* 新建态 */
+      if(!pendingCtx)return;
+      annos.push({id:genId(), file:pendingCtx.file, chapterTitle:pendingCtx.chapterTitle, chapterIdx:pendingCtx.chapterIdx,
+        snippet:pendingCtx.snippet, selectedText:pendingCtx.selectedText, context:pendingCtx.context,
+        comment:text, type:curType, createdAt:new Date().toISOString()});
+      save(annos); hidePop();
+      if(window.getSelection)window.getSelection().removeAllRanges();
+    }
     ensureShadowCss(); applyHighlights(); renderList(); updateCount();
   };
 
@@ -287,8 +300,8 @@ JS = r"""
     var S=getSR(); if(!S)return;
     ensureShadowCss();   /* 切章 build() 会清空 Shadow 内的高亮样式，常驻标记前先补回 */
     var marks=S.querySelectorAll('.wr-anno-mark');
-    for(var i=0;i<marks.length;i++){marks[i].classList.remove('wr-anno-mark'); marks[i].removeAttribute('data-sev');}
-    load().forEach(function(a){var el=locateEl(a); if(el){el.classList.add('wr-anno-mark'); if(a.severity)el.setAttribute('data-sev',a.severity);}});
+    for(var i=0;i<marks.length;i++){marks[i].classList.remove('wr-anno-mark');}
+    load().forEach(function(a){var el=locateEl(a); if(el)el.classList.add('wr-anno-mark');});
   }
   /* 换章/重建后：先重注 shadow CSS（build 会清空），再重绘常驻标记 */
   (function watchSR(){
@@ -371,6 +384,25 @@ JS = r"""
   /* ---- 列表 / 导出 ---- */
   function esc(s){return (''+s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
   function updateCount(){if(bList)bList.textContent='📋 批注('+load().length+')';}
+  function findAnno(id){var arr=load(); for(var i=0;i<arr.length;i++){ if(arr[i].id===id) return arr[i]; } return null;}
+  /* 编辑：复用弹窗，预填备注+类型；保存时 annoSave 走「更新」分支（不再新建） */
+  function startEdit(anno){
+    if(!anno)return;
+    editingId=anno.id; pendingCtx=null;
+    var pop=document.getElementById('annoPop');
+    document.getElementById('annoText').value=anno.comment||'';
+    setType(anno.type||'文字');
+    document.getElementById('annoSave').textContent='更新';
+    pop.style.display='block';
+    pop.style.left=Math.max(8,(window.innerWidth-300)/2)+'px';
+    pop.style.top=Math.max(8,(window.innerHeight-220)/2)+'px';
+    document.getElementById('annoText').focus();
+  }
+  /* 删除：直接删（无确认），同步撤掉左侧常驻标记与计数 */
+  function deleteAnno(id){
+    var annos=load().filter(function(a){return a.id!==id;});
+    save(annos); ensureShadowCss(); applyHighlights(); renderList(); updateCount();
+  }
   function renderList(){
     var list=document.getElementById('annoList'); var annos=load();
     if(!annos.length){list.innerHTML='<div class="anno-empty">暂无批注。<br>打开「✏️ 标注」，在正文选中文字/图片即可批注。</div>'; updateCount(); return;}
@@ -378,20 +410,24 @@ JS = r"""
     var html='';
     Object.keys(groups).forEach(function(f){
       html+='<div class="anno-grp"><h4>'+esc(f)+' · '+(groups[f][0].chapterTitle||'')+'</h4>';
-      groups[f].forEach(function(a,i){
-        html+='<div class="anno-item" data-file="'+esc(f)+'" data-i="'+i+'">'
-          +'<span class="badge '+a.severity+'">'+a.severity+'</span>'
+      groups[f].forEach(function(a){
+        html+='<div class="anno-item" data-id="'+esc(a.id||'')+'">'
+          +'<span class="badge">'+esc(a.type||'')+'</span>'
           +'<span class="snip">'+esc(a.snippet||'(图/版式)')+'</span>'
           +(a.comment?'<div class="cm">'+esc(a.comment)+'</div>':'')
-          +'<div class="metaline">'+(a.type||'')+' · '+(a.context&&a.context.nearestHeading?esc(a.context.nearestHeading):'')+'</div>'
+          +'<div class="metaline">'+(a.context&&a.context.nearestHeading?esc(a.context.nearestHeading):'')+'</div>'
+          +'<span class="acts"><button class="act-edit" title="编辑">✏️</button><button class="act-del" title="删除">🗑</button></span>'
           +'</div>';
       });
       html+='</div>';
     });
     list.innerHTML=html;
     list.querySelectorAll('.anno-item').forEach(function(it){
+      var id=it.dataset.id;
+      it.querySelector('.act-edit').addEventListener('click',function(e){e.stopPropagation(); startEdit(findAnno(id));});
+      it.querySelector('.act-del').addEventListener('click',function(e){e.stopPropagation(); deleteAnno(id);});
       it.onclick=function(){
-        var anno=groups[it.dataset.file][+it.dataset.i];
+        var anno=findAnno(id); if(!anno)return;
         ensureShadowCss();
         var curSec=getSR()&&getSR().querySelector('.wr-secs .wr-sec');
         if(anno.chapterIdx!=null && curSec && chapterIdxOf(curSec)!==anno.chapterIdx){
@@ -424,7 +460,7 @@ JS = r"""
     Object.keys(groups).forEach(function(f){
       md+='## '+f+' · '+(groups[f][0].chapterTitle||'')+'\n\n';
       groups[f].forEach(function(a){
-        md+='- **['+a.severity+']** '+(a.type||'')+'：「'+(a.snippet||'(图/版式)')+'」→ '+(a.comment||'(未填备注)')+'\n';
+        md+='- **'+(a.type||'')+'**：「'+(a.snippet||'(图/版式)')+'」→ '+(a.comment||'(未填备注)')+'\n';
         if(a.context&&a.context.nearestHeading)md+='  - 上下文：'+a.context.nearestHeading+'\n';
       });
       md+='\n';
