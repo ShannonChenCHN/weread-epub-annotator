@@ -320,14 +320,23 @@ JS = r"""
   })();
 
   /* ---- 点击条目：跨章定位 + 滚动 + 精确子串闪烁 ---- */
-  function goChapter(idx){
-    var toc=document.getElementById('toc'); if(!toc) return;
+  /* 按章节索引跳转；索引对不上时（如预览重建后索引漂移）退回按标题匹配 */
+  function goChapter(idx, title){
+    var toc=document.getElementById('toc'); if(!toc) return false;
     var as=toc.querySelectorAll('a[data-i]');
-    for(var i=0;i<as.length;i++){
-      var lo=parseInt(as[i].getAttribute('data-i'),10);
-      var hi=as[i].getAttribute('data-last'); hi=(hi==null)?lo:parseInt(hi,10);
-      if(idx>=lo && idx<=hi){ try{as[i].click();}catch(e){} return; }
+    if(idx!=null){
+      for(var i=0;i<as.length;i++){
+        var lo=parseInt(as[i].getAttribute('data-i'),10);
+        var hi=as[i].getAttribute('data-last'); hi=(hi==null)?lo:parseInt(hi,10);
+        if(idx>=lo && idx<=hi){ try{as[i].click();}catch(e){} return true; }
+      }
     }
+    if(title){
+      for(var j=0;j<as.length;j++){
+        if((as[j].textContent||'').trim()===(title||'').trim()){ try{as[j].click();}catch(e){} return true; }
+      }
+    }
+    return false;
   }
   function unwrapFlash(){
     var s=getSR(); if(!s) return;
@@ -392,7 +401,6 @@ JS = r"""
   /* ---- 列表 / 导出 ---- */
   function esc(s){return (''+s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
   function updateCount(){if(bList)bList.innerHTML=SVG_LIST+' 批注('+load().length+')';}
-  function findAnno(id){var arr=load(); for(var i=0;i<arr.length;i++){ if(arr[i].id===id) return arr[i]; } return null;}
   /* 编辑：复用弹窗，预填备注+类型；保存时 annoSave 走「更新」分支（不再新建） */
   function startEdit(anno){
     if(!anno)return;
@@ -430,19 +438,21 @@ JS = r"""
       html+='</div>';
     });
     list.innerHTML=html;
-    list.querySelectorAll('.anno-item').forEach(function(it){
-      var id=it.dataset.id;
-      it.querySelector('.act-edit').addEventListener('click',function(e){e.stopPropagation(); startEdit(findAnno(id));});
-      it.querySelector('.act-del').addEventListener('click',function(e){e.stopPropagation(); deleteAnno(id);});
-      it.onclick=function(){
-        var anno=findAnno(id); if(!anno)return;
-        ensureShadowCss();
-        var curSec=getSR()&&getSR().querySelector('.wr-secs .wr-sec');
-        if(anno.chapterIdx!=null && curSec && chapterIdxOf(curSec)!==anno.chapterIdx){
-          goChapter(anno.chapterIdx); applyHighlights(); /* 切章后即时补回常驻标记 */
-        }
-        flashAnno(anno);
-      };
+    var items=list.querySelectorAll('.anno-item'); var k=0;
+    Object.keys(groups).forEach(function(f){
+      groups[f].forEach(function(a){
+        var it=items[k++]; if(!it) return;
+        it.querySelector('.act-edit').addEventListener('click',function(e){e.stopPropagation(); startEdit(a);});
+        it.querySelector('.act-del').addEventListener('click',function(e){e.stopPropagation(); deleteAnno(a.id);});
+        it.onclick=function(){
+          ensureShadowCss();
+          var curSec=getSR()&&getSR().querySelector('.wr-secs .wr-sec');
+          if(a.chapterIdx!=null && curSec && chapterIdxOf(curSec)!==a.chapterIdx){
+            goChapter(a.chapterIdx, a.chapterTitle); applyHighlights(); /* 切章后即时补回常驻标记 */
+          }
+          flashAnno(a);
+        };
+      });
     });
     updateCount();
   }
