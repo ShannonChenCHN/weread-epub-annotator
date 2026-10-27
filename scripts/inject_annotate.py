@@ -75,8 +75,10 @@ CSS = r"""
 /* 每条右侧编辑/删除按钮：悬浮显现，点按钮不触发整条跳转 */
 .anno-item .acts{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0;transition:opacity .15s}
 .anno-item:hover .acts{opacity:1}
-.anno-item .acts button{border:1px solid #e3e5e9;background:#fff;border-radius:6px;width:24px;height:24px;line-height:1;padding:0;cursor:pointer;font-size:13px}
+.anno-item .acts button{display:inline-flex;align-items:center;justify-content:center;border:1px solid #e3e5e9;background:#fff;border-radius:6px;width:24px;height:24px;padding:0;cursor:pointer;color:#61666e}
 .anno-item .acts button:hover{border-color:#3b6df5;color:#3b6df5}
+.anno-item .acts button.act-del:hover{border-color:#e5484d;color:#e5484d}
+.anno-item .acts svg{display:block;width:14px;height:14px}
 .anno-empty{color:#8b9098;text-align:center;margin-top:30px;line-height:1.8}
 @media (max-width:900px){
   /* 窄屏抽屉化：从右侧滑入 + 半透明蒙层（与目录抽屉交互一致） */
@@ -384,6 +386,9 @@ JS = r"""
   /* ---- 列表 / 导出 ---- */
   function esc(s){return (''+s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
   function updateCount(){if(bList)bList.textContent='📋 批注('+load().length+')';}
+  /* 内联 SVG 图标（Lucide/Feather 风，stroke=currentColor，随 hover 变色，无需外部资源） */
+  var SVG_EDIT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+  var SVG_DEL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
   function findAnno(id){var arr=load(); for(var i=0;i<arr.length;i++){ if(arr[i].id===id) return arr[i]; } return null;}
   /* 编辑：复用弹窗，预填备注+类型；保存时 annoSave 走「更新」分支（不再新建） */
   function startEdit(anno){
@@ -416,7 +421,7 @@ JS = r"""
           +'<span class="snip">'+esc(a.snippet||'(图/版式)')+'</span>'
           +(a.comment?'<div class="cm">'+esc(a.comment)+'</div>':'')
           +'<div class="metaline">'+(a.context&&a.context.nearestHeading?esc(a.context.nearestHeading):'')+'</div>'
-          +'<span class="acts"><button class="act-edit" title="编辑">✏️</button><button class="act-del" title="删除">🗑</button></span>'
+          +'<span class="acts"><button class="act-edit" title="编辑" aria-label="编辑">'+SVG_EDIT+'</button><button class="act-del" title="删除" aria-label="删除">'+SVG_DEL+'</button></span>'
           +'</div>';
       });
       html+='</div>';
