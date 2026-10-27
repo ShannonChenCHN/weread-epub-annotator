@@ -13,7 +13,7 @@ inject_annotate.py —— 给 weread-epub-preview 生成的 index.html 注入「
         （严重级 P1/P2/P3 + 类型 文字/图片/版式 + 备注）→ 保存。
       - 批注按「源 xhtml 文件路径 + 文字片段 + 最近标题」定位，存入 localStorage，
         换章自动重绘常驻标记（MutationObserver）。
-      - 「📋 批注」面板可：点条目跳转定位并闪烁高亮、导出 JSON、导出「给 agent 的 MD 任务清单」、清空。
+      - 「📋 批注」面板可：点条目跳转定位并闪烁高亮、一键「复制」所有批注 (Markdown)、「导出」给 agent 的 MD 任务清单、清空。
   * 锚点不依赖源码 id（源码正文元素本就无 id）；靠文字片段 + 最近标题即可反查源 xhtml。
 
 设计要点:
@@ -99,8 +99,8 @@ HTML = r"""
   <header>
     <b>批注</b>
     <span class="tools">
-      <button id="annoExportJson" title="下载 annotations.json">JSON</button>
-      <button id="annoExportMd" title="下载给 agent 的任务清单">导出MD</button>
+      <button id="annoCopy" title="复制所有批注 (Markdown)">复制</button>
+      <button id="annoExportMd" title="导出给 agent 的任务清单 (Markdown)">导出</button>
       <button id="annoClear" title="清空本书全部批注">清空</button>
       <button class="panel-close" id="annoClose" title="关闭">✕</button>
     </span>
@@ -451,6 +451,21 @@ JS = r"""
     var a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click();
     setTimeout(function(){URL.revokeObjectURL(url); a.remove();},120);
   }
+  /* 复制到剪贴板：优先 navigator.clipboard；file:// 等不安全上下文退回 execCommand 兜底 */
+  function copyText(text){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function(res,rej){
+      try{
+        var ta=document.createElement('textarea'); ta.value=text;
+        ta.style.position='fixed'; ta.style.top='-9999px'; ta.style.opacity='0';
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        var ok=document.execCommand('copy'); ta.remove();
+        ok?res():rej(new Error('copy failed'));
+      }catch(e){rej(e);}
+    });
+  }
   document.getElementById('annoClose').onclick=function(){document.getElementById('annoPanel').classList.remove('open'); syncBackdrop();};
   /* 窄屏半透明蒙层：展开批注面板时显示，点击蒙层关闭（与目录抽屉一致） */
   var annoBd=document.getElementById('annoBackdrop');
@@ -461,10 +476,10 @@ JS = r"""
     if(annoBd) annoBd.style.display = show ? 'block' : 'none';
   }
   window.addEventListener('resize', syncBackdrop);
-  document.getElementById('annoExportJson').onclick=function(){download('annotations.json',JSON.stringify(load(),null,2),'application/json');};
-  document.getElementById('annoExportMd').onclick=function(){
-    var annos=load(); var groups={}; annos.forEach(function(a){(groups[a.file]=groups[a.file]||[]).push(a);});
-    var md='# 校对批注任务清单（微信读书本地预览）\n\n> 由预览页「选中即批注」导出。每条含源 xhtml 路径、锚点（文字片段/最近标题）、严重级与备注。\n\n';
+  /* 生成「给 agent 的任务清单」Markdown（复制与导出共用同一份内容） */
+  function buildMd(annos){
+    var groups={}; annos.forEach(function(a){(groups[a.file]=groups[a.file]||[]).push(a);});
+    var md='# 校对批注任务清单（微信读书本地预览）\n\n> 由预览页「选中即批注」导出。每条含源 xhtml 路径、锚点（文字片段/最近标题）、类型与备注。\n\n';
     Object.keys(groups).forEach(function(f){
       md+='## '+f+' · '+(groups[f][0].chapterTitle||'')+'\n\n';
       groups[f].forEach(function(a){
@@ -473,7 +488,21 @@ JS = r"""
       });
       md+='\n';
     });
-    download('annotations_for_agent.md',md,'text/markdown');
+    return md;
+  }
+  document.getElementById('annoCopy').addEventListener('click',function(){
+    var annos=load(); var btn=this; var ot=btn.textContent;
+    if(!annos.length){ btn.textContent='暂无批注'; setTimeout(function(){btn.textContent=ot;},1500); return; }
+    copyText(buildMd(annos)).then(function(){
+      btn.textContent='已复制 '+annos.length+' 条';
+    }).catch(function(){
+      btn.textContent='复制失败';
+    }).then(function(){
+      setTimeout(function(){btn.textContent=ot;},1500);
+    });
+  });
+  document.getElementById('annoExportMd').onclick=function(){
+    download('annotations_for_agent.md',buildMd(load()),'text/markdown');
   };
   document.getElementById('annoClear').onclick=function(){if(confirm('清空本书全部批注？')){STORE.set(LS_KEY,'[]');applyHighlights();renderList();}};
 
