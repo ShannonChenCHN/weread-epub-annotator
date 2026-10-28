@@ -53,10 +53,14 @@ python3 ~/.workbuddy/skills/weread-epub-preview/scripts/weread_preview.py <book.
   顶栏 `sticky` 吸附顶部、滚动全程不动（窄屏媒体查询里把 `html,body` 放开为 `height:auto`，
   否则 body 被全局 `height:100%` 锁成一屏高，滚动超过一屏后顶栏会被「拽走」）。
 - **选中即批注（内置，默认开）**：预览页顶栏默认带「标注 / 批注(n)」两个按钮（内联 SVG 图标：铅笔 / 列表）。
-  开启「标注」后，在正文用鼠标选中文字或图片即可弹批注框（类型 文字/图片/版式 + 备注），
-  按「源 xhtml 路径 + 文字片段 + 最近标题」定位（源码无 id 也能反查），存 localStorage，换章自动重绘左侧蓝色标记；
+  - **桌面（鼠标）**：开启「标注」后，在正文选中文字或图片 → 自动弹批注框（类型 文字/图片/版式 + 备注）。
+  - **手机/平板（无 hover + 粗指针）**：长按选中文字 → 浮出小「批注」按钮 → 点它才弹批注框；
+    弹窗固定在底部安全区、textarea 16px（防 iOS 聚焦缩放）、键盘弹出时自动上抬。
+    选区读取走多策略：`Selection.getComposedRanges`（Safari 17+）→ `shadowRoot.getSelection`（Chromium）
+    → `window.getSelection` → 纯文本降级（取当前章 + 文字片段作锚点）。
+  - 批注按「源 xhtml 路径 + 文字片段 + 最近标题」定位（源码无 id 也能反查），存 localStorage，换章自动重绘左侧蓝色标记；
   「批注」面板每条右侧有「编辑 / 删除」SVG 图标按钮（编辑复用弹窗改备注与类型，删除直接撤掉标记与计数），
-  面板还支持跳转定位、导出 JSON、导出「给 agent 的 MD 任务清单」、清空。
+  面板还支持跳转定位（滚动 + 精确子串闪烁高亮）、「复制」全部批注 Markdown、「导出」给 agent 的 MD 任务清单、清空。
   由 `--annotate`（默认开）/ `--no-annotate`（纯预览）控制；历史预览仍可用配套 `inject_annotate.py` 后处理注入。
   批注层只改预览页 HTML，**不碰 EPUB 源**；重跑预览会清掉注入层，但 localStorage 里的批注数据仍在浏览器侧。
 - 静态体检报告仍会生成 `weread-report.md` / `weread-report.json`（见上方产出表），只是预览页内不再内置报告抽屉。

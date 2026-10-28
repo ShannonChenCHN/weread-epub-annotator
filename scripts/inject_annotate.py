@@ -8,12 +8,14 @@ inject_annotate.py —— 给 weread-epub-preview 生成的 index.html 注入「
 
 特性:
   * 不修改 EPUB 源，只改预览页 HTML（--undo 可完整移除，可逆）。
-  * 注入后：顶栏出现「✏️ 标注」「📋 批注(n)」两个按钮。
-      - 打开「✏️ 标注」模式 → 在正文中用鼠标选中文字/图片 → 弹出批注框
-        （严重级 P1/P2/P3 + 类型 文字/图片/版式 + 备注）→ 保存。
+  * 注入后：顶栏出现「标注」「批注(n)」两个按钮（内联 SVG 图标）。
+      - 桌面：打开「标注」模式 → 用鼠标选中文字/图片 → 自动弹出批注框（类型 文字/图片/版式 + 备注）→ 保存。
+      - 手机/平板（无 hover + 粗指针）：长按选中文字 → 浮出小「批注」按钮 → 点它才弹批注框。
+        选区读取多策略：getComposedRanges（Safari 17+）→ shadowRoot.getSelection（Chromium）
+        → window.getSelection → 纯文本降级；窄屏弹窗固定底部安全区、textarea 16px 防 iOS 缩放。
       - 批注按「源 xhtml 文件路径 + 文字片段 + 最近标题」定位，存入 localStorage，
         换章自动重绘常驻标记（MutationObserver）。
-      - 「📋 批注」面板可：点条目跳转定位并闪烁高亮、一键「复制」所有批注 (Markdown)、「导出」给 agent 的 MD 任务清单、清空。
+      - 「批注」面板可：点条目跳转定位并闪烁高亮、一键「复制」所有批注 (Markdown)、「导出」给 agent 的 MD 任务清单、清空。
   * 锚点不依赖源码 id（源码正文元素本就无 id）；靠文字片段 + 最近标题即可反查源 xhtml。
 
 设计要点:
@@ -82,6 +84,20 @@ CSS = r"""
 .anno-item .acts button.act-del:hover{border-color:#e5484d;color:#e5484d}
 .anno-item .acts svg{display:block;width:14px;height:14px}
 .anno-empty{color:#8b9098;text-align:center;margin-top:30px;line-height:1.8}
+/* 触屏：选中文字后浮出的小「批注」按钮（点击才弹批注框，避免与系统选区菜单抢位） */
+.anno-fab{position:fixed;z-index:10000;display:none;border:none;border-radius:999px;
+  background:#3b6df5;color:#fff;padding:9px 16px;cursor:pointer;
+  font:14px/1 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  box-shadow:0 4px 14px rgba(0,0,0,.25);
+  -webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+/* 窄屏：批注框固定到底部安全区（覆盖 JS 写入的内联 left/top），textarea 16px 防 iOS 聚焦缩放 */
+@media (max-width:600px){
+  .anno-pop{left:8px !important;right:8px !important;width:auto !important;
+    top:auto !important;bottom:calc(env(safe-area-inset-bottom,0px) + 10px + var(--anno-kb,0px)) !important;
+    font-size:14px;padding:12px}
+  .anno-pop textarea{font-size:16px;height:80px}
+  .anno-pop .seg button,.anno-pop .save,.anno-pop .cancel{padding:6px 12px;font-size:14px}
+}
 @media (max-width:900px){
   /* 窄屏抽屉化：从右侧滑入 + 半透明蒙层（与目录抽屉交互一致） */
   .anno-panel{width:min(82vw,300px);display:flex;transform:translateX(100%);transition:transform .22s ease}
@@ -107,6 +123,7 @@ HTML = r"""
   </header>
   <div class="list" id="annoList"></div>
 </aside>
+<button class="anno-fab" id="annoFab" style="display:none">批注</button>
 <div class="anno-pop" id="annoPop" style="display:none">
   <textarea id="annoText" placeholder="点此输入要改什么…（可留空，仅标记位置）"></textarea>
   <div class="row">
@@ -163,11 +180,55 @@ JS = r"""
     if(st.textContent!==ANNO_SHADOW_CSS) st.textContent=ANNO_SHADOW_CSS;
   }
 
-  /* Shadow DOM 选区：优先 shadowRoot.getSelection()，拿不到再退回 window.getSelection() */
-  function getSel(){
-    var s=getSR();
-    if(s && typeof s.getSelection==='function'){ try{ var x=s.getSelection(); if(x && x.rangeCount) return x; }catch(e){} }
-    return window.getSelection();
+  /* Shadow DOM 选区读取：多策略，返回 {range, text} 或 null。
+     ⚠ 顺序很关键：Safari 的 document.getSelection() 对 shadow 内选区可能报 collapsed 或空文本，
+     因此标准 API getComposedRanges（Safari 17+ / Chrome 125+）必须最先尝试，不能先判 isCollapsed。 */
+  /* StaticRange -> Range：getComposedRanges 返回的 StaticRange 没有 getBoundingClientRect，需转成真 Range */
+  function staticRangeToRange(sr){
+    var r=document.createRange();
+    try{ r.setStart(sr.startContainer, sr.startOffset); r.setEnd(sr.endContainer, sr.endOffset); return r; }
+    catch(e){ return null; }
+  }
+  function getRangeInfo(){
+    var S=getSR(); if(!S) return null;
+    var sel=null; try{ sel=window.getSelection(); }catch(e){}
+    /* 1) 标准 API：唯一能正规穿透 Shadow DOM 的途径（Safari 17+ / Chrome 125+） */
+    if(sel && typeof sel.getComposedRanges==='function'){
+      try{
+        var crs=sel.getComposedRanges({shadowRoots:[S]});
+        if(crs && crs.length){
+          var r=staticRangeToRange(crs[0]);
+          if(r && !r.collapsed){ var t=(r.toString()||'').trim(); if(t) return {range:r, text:t}; }
+        }
+      }catch(e){}
+    }
+    /* 2) Chromium 非标准 shadowRoot.getSelection() */
+    if(typeof S.getSelection==='function'){
+      try{
+        var xs=S.getSelection();
+        if(xs && xs.rangeCount && !xs.isCollapsed){
+          var r2=xs.getRangeAt(0);
+          if(r2 && !r2.collapsed){ var t2=(xs.toString()||r2.toString()||'').trim(); if(t2) return {range:r2, text:t2}; }
+        }
+      }catch(e){}
+    }
+    /* 3) 能穿透 shadow 的 window 选区（Firefox / light-DOM 选区） */
+    if(sel && sel.rangeCount){
+      try{
+        var r3=sel.getRangeAt(0);
+        if(r3 && !r3.collapsed){
+          var c3=r3.commonAncestorContainer;
+          if(S.contains(c3.nodeType===3?c3.parentNode:c3)){
+            var t3=(sel.toString()||r3.toString()||'').trim();
+            if(t3) return {range:r3, text:t3};
+          }
+        }
+      }catch(e){}
+    }
+    /* 4) 纯文本降级：拿不到 Range（旧 Safari）但有选中文本 */
+    var t4=''; try{ t4=(sel&&sel.toString()||'').trim(); }catch(e){}
+    if(t4) return {range:null, text:t4};
+    return null;
   }
   /* 当前章索引：引擎在 section 上写 data-idx；缺 data-idx 的旧预览用标题匹配兜底 */
   function chapterIdxOf(sec){
@@ -180,6 +241,11 @@ JS = r"""
 
   var annoMode=true, curType='文字', pendingCtx=null, editingId=null;
   var bList=null;
+  /* 触屏设备用「选中后浮出批注按钮」；鼠标设备沿用 mouseup 自动弹窗 */
+  /* 以「无 hover + 粗指针」判定手机/平板；桌面触屏笔记本仍是 hover:hover，不会误判成 FAB 模式 */
+  var IS_TOUCH=window.matchMedia?window.matchMedia('(hover: none) and (pointer: coarse)').matches:('ontouchstart' in window);
+  var fab=document.getElementById('annoFab');
+  var fabPressedUntil=0, lastSelText='';
   /* 内联 SVG 图标（Lucide/Feather 风，stroke=currentColor，随 hover 变色，无需外部资源） */
   var SVG_EDIT='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
   var SVG_DEL='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
@@ -215,37 +281,87 @@ JS = r"""
   }
   function snippetOf(t){t=(t||'').replace(/\s+/g,' ').trim(); return t.length>60?t.slice(0,60):t;}
 
-  /* ---- 选区 -> 批注上下文 ---- */
+  /* ---- 选区 -> 批注上下文（有 Range 精确定位；无 Range 降级为「当前章 + 文本片段」） ---- */
+  function captureSelection(){
+    var info=getRangeInfo(); if(!info) return null;
+    var S=getSR(); if(!S) return null;
+    var sec=null, block=null, node=null, range=info.range;
+    if(range){
+      node=range.commonAncestorContainer;
+      if(node && node.nodeType===3) node=node.parentElement;
+      if(!node || !S.contains(node)) return null;
+      sec=secOf(node); block=blockOf(node);
+    }else{
+      /* 降级：旧 Safari 拿不到 Range，用当前唯一挂载的章节 + 文本片段构造锚点 */
+      sec=S.querySelector('.wr-secs .wr-sec');
+    }
+    if(!sec) return null;
+    var idx=chapterIdxOf(sec); var ch=DATA.chapters[idx]; if(!ch) return null;
+    var isImg = node ? !!closest(node,'figure,img,.fig-c') : false;
+    if(isImg && curType==='文字') setType('图片');
+    return {
+      ctx:{file:ch.file, chapterTitle:ch.title, chapterIdx:idx,
+        snippet:snippetOf(info.text),
+        selectedText:info.text.slice(0,200),
+        context:{nearestHeading:nearestHeading(block,sec),
+          elemTag:block?block.tagName.toLowerCase():'',
+          elemClass:block&&block.className?(''+block.className):'',
+          figIndex:figIndexOf(block,sec)}},
+      rect: range ? range.getBoundingClientRect() : null,
+      text: info.text
+    };
+  }
+  function openPop(rect){
+    var pop=document.getElementById('annoPop'); pop.style.display='block';
+    document.getElementById('annoSave').textContent='保存';
+    if(rect){
+      var x=Math.min(rect.left, window.innerWidth-300), y=rect.bottom+8;
+      if(y>window.innerHeight-220)y=rect.top-226;
+      pop.style.left=Math.max(8,x)+'px'; pop.style.top=Math.max(8,y)+'px';
+    }else{
+      pop.style.left=Math.max(8,(window.innerWidth-300)/2)+'px';
+      pop.style.top=Math.max(8,(window.innerHeight-220)/2)+'px';
+    }
+    /* 窄屏下 CSS 会把弹窗强制到底部安全区，这里的 left/top 只对桌面生效 */
+  }
+  /* 桌面：mouseup 后自动弹窗 */
   function onSelect(){
     editingId=null;   /* 进入新建态，避免复用上一次的编辑态 */
     if(!annoMode)return;
-    var sel=getSel();
-    if(!sel||sel.isCollapsed||!sel.rangeCount){hidePop();return;}
-    var range=sel.getRangeAt(0);
-    var node=range.commonAncestorContainer;
-    if(node.nodeType===3)node=node.parentElement;
-    var S=getSR(); if(!S||!S.contains(node)){hidePop();return;}
-    var sec=secOf(node); if(!sec){hidePop();return;}
-    var idx=chapterIdxOf(sec); var ch=DATA.chapters[idx]; if(!ch){hidePop();return;}
-    var block=blockOf(node);
-    var isImg=!!closest(node,'figure,img,.fig-c');
-    if(isImg&&curType==='文字')setType('图片');
-    pendingCtx={file:ch.file, chapterTitle:ch.title, chapterIdx:idx,
-      snippet:snippetOf(sel.toString()),
-      selectedText:(sel.toString()||'').slice(0,200),
-      context:{nearestHeading:nearestHeading(block,sec), elemTag:block?block.tagName.toLowerCase():'',
-        elemClass:block&&block.className?(''+block.className):'', figIndex:figIndexOf(block,sec)}};
-    var pop=document.getElementById('annoPop'); pop.style.display='block';
-    document.getElementById('annoSave').textContent='保存';
-    var r=range.getBoundingClientRect();
-    var x=Math.min(r.left, window.innerWidth-300), y=r.bottom+8;
-    if(y>window.innerHeight-220)y=r.top-226;
-    pop.style.left=Math.max(8,x)+'px'; pop.style.top=Math.max(8,y)+'px';
-    document.getElementById('annoLoc').textContent=(ch.title||'')+' · '+(pendingCtx.context.nearestHeading||'(章首)');
+    var cap=captureSelection();
+    if(!cap){hidePop();return;}
+    pendingCtx=cap.ctx;
+    document.getElementById('annoText').value='';
+    document.getElementById('annoLoc').textContent=(cap.ctx.chapterTitle||'')+' · '+(cap.ctx.context.nearestHeading||'(章首)');
+    openPop(cap.rect);
     /* 注意：此处不抢焦点（不调 annoText.focus()）。聚焦 textarea 会清空 Shadow 内文字选区，
        导致用户无法复制刚选中的文字。写备注时用户自行点文本框即可。 */
   }
-  function hidePop(){var p=document.getElementById('annoPop'); if(p)p.style.display='none'; pendingCtx=null; editingId=null;}
+  /* 触屏：点浮出的「批注」按钮才弹窗（不读活选区，点按钮后选区可能已消失） */
+  function onFabTap(){
+    if(!pendingCtx) return;
+    editingId=null;
+    document.getElementById('annoText').value='';
+    setType(curType); markSeg('annoType',curType);
+    document.getElementById('annoLoc').textContent=(pendingCtx.chapterTitle||'')+' · '+(pendingCtx.context.nearestHeading||'(章首)');
+    openPop(null);
+    hideFab();
+  }
+  function showFab(rect){
+    if(!fab) return;
+    var w=76;
+    var x=Math.min(Math.max(8, rect.left+rect.width/2-w/2), Math.max(8,window.innerWidth-w-8));
+    var y=(rect.top>72)?(rect.top-46):(rect.bottom+10);
+    y=Math.max(8, Math.min(y, Math.max(8,window.innerHeight-48)));
+    fab.style.transform='none';
+    fab.style.left=x+'px'; fab.style.top=y+'px'; fab.style.display='block';
+  }
+  function hideFab(){ if(fab) fab.style.display='none'; }
+  function hidePop(){
+    var p=document.getElementById('annoPop'); if(p)p.style.display='none';
+    hideFab(); lastSelText='';
+    pendingCtx=null; editingId=null;
+  }
 
   function setType(v){curType=v; markSeg('annoType',v);}
   function markSeg(id,v){var box=document.getElementById(id); if(!box)return; var bs=box.querySelectorAll('button'); for(var i=0;i<bs.length;i++){bs[i].classList.toggle('on',bs[i].dataset.v===v);}}
@@ -271,12 +387,70 @@ JS = r"""
     ensureShadowCss(); applyHighlights(); renderList(); updateCount();
   };
 
-  /* 选区监听：等 shadow 建立后再挂（capture 保证拿到选区）；引擎很少重建 shadowRoot，故监听长期有效 */
+  /* 选区监听：桌面 mouseup 自动弹窗；触屏走 document 级 selectionchange（防抖）浮现批注按钮。
+     挂在 document 一份即可（shadow 内选区的 selectionchange 也会在 document 触发），
+     再挂 shadowRoot 会重复触发。 */
   (function bindSel(){
     var s=getSR();
     if(!s){ setTimeout(bindSel,80); return; }
     if(s.__annoBound) return; s.__annoBound=true;
-    s.addEventListener('mouseup', onSelect, true);
+
+    var timer=null;
+    function onSelChange(){
+      if(!annoMode || !IS_TOUCH) return;
+      if(Date.now()<fabPressedUntil) return;             /* 刚按下 FAB：忽略由点击引起的选区坍缩 */
+      var anchor=null; try{ anchor=(window.getSelection()||{}).anchorNode; }catch(e){}
+      if(anchor){
+        var el=anchor.nodeType===1?anchor:anchor.parentElement;
+        if(el && el.closest && (el.closest('.anno-pop')||el.closest('.anno-panel'))) return; /* 输入框内选区忽略 */
+      }
+      clearTimeout(timer);
+      timer=setTimeout(function(){
+        if(Date.now()<fabPressedUntil || !fab) return;
+        var cap=captureSelection();
+        if(!cap || !cap.text){ hideFab(); lastSelText=''; return; }   /* 选区没了 → 收起 FAB */
+        if(cap.text===lastSelText && fab && fab.style.display==='block') return; /* 同一选区不重复定位 */
+        lastSelText=cap.text;
+        pendingCtx=cap.ctx;                                           /* 先捕获，点 FAB 时选区可能已消失 */
+        document.getElementById('annoLoc').textContent=(cap.ctx.chapterTitle||'')+' · '+(cap.ctx.context.nearestHeading||'(章首)');
+        if(cap.rect) showFab(cap.rect);
+        else {                                                        /* 无 Range 降级：屏幕下部居中 */
+          fab.style.transform='translateX(-50%)';
+          fab.style.left='50%';
+          fab.style.top=Math.max(8,window.innerHeight-120)+'px';
+          fab.style.display='block';
+        }
+      },250);
+    }
+    /* document 与 shadowRoot 各挂一份：规范要求 selectionchange 在两者都派发，
+       但个别 WebKit 版本只在其中一处触发；共用同一个 timer，重复派发会被防抖合并。 */
+    document.addEventListener('selectionchange', onSelChange, true);
+    s.addEventListener('selectionchange', onSelChange, true);
+
+    if(fab){
+      /* touchstart 只记录「按下了」，不 preventDefault（避免阻断随后的 click） */
+      fab.addEventListener('touchstart', function(){ fabPressedUntil=Date.now()+600; }, {passive:true});
+      fab.addEventListener('mousedown', function(){ fabPressedUntil=Date.now()+600; });
+      fab.addEventListener('click', onFabTap);
+    }
+    /* 滚动后选区相对视口位置失效 → 收起 FAB */
+    window.addEventListener('scroll', hideFab, {passive:true, capture:true});
+    s.addEventListener('scroll', hideFab, {passive:true});
+
+    /* iOS 键盘弹出：把底部弹窗抬到键盘上沿（--anno-kb 由 CSS 的 calc 读取） */
+    if(IS_TOUCH && window.visualViewport){
+      var vv=window.visualViewport;
+      var kbAdjust=function(){
+        var pop=document.getElementById('annoPop'); if(!pop) return;
+        var kb=window.innerHeight - vv.height - vv.offsetTop;
+        pop.style.setProperty('--anno-kb', (kb>40?kb:0)+'px');
+      };
+      vv.addEventListener('resize', kbAdjust);
+      vv.addEventListener('scroll', kbAdjust);
+    }
+
+    /* 桌面鼠标路径（触屏下 mouseup 会随后续点击误触，显式短路） */
+    s.addEventListener('mouseup', function(){ if(IS_TOUCH) return; onSelect(); }, true);
   })();
 
   /* ---- 定位 / 常驻标记（左侧按严重级上色的细条，做总览） ---- */
@@ -317,7 +491,16 @@ JS = r"""
     var s=getSR();
     if(!s){ setTimeout(watchSR,80); return; }
     if(s.__annoWatch) return; s.__annoWatch=true;
-    new MutationObserver(function(){ensureShadowCss();applyHighlights();}).observe(s,{childList:true,subtree:true});
+    var lastWatchIdx=null;
+    new MutationObserver(function(){
+      ensureShadowCss(); applyHighlights();
+      /* 仅在「真的换了章」时清 FAB 与旧章上下文（同章重绘不清，避免误伤刚选中的批注） */
+      var sec=s.querySelector('.wr-secs .wr-sec');
+      var ci=sec?chapterIdxOf(sec):null;
+      if(ci!==lastWatchIdx){
+        lastWatchIdx=ci; hidePop();   /* 换章：收起 FAB 与弹窗，并清掉旧章 pendingCtx */
+      }
+    }).observe(s,{childList:true,subtree:true});
   })();
 
   /* ---- 点击条目：跨章定位 + 滚动 + 精确子串闪烁 ---- */
@@ -410,6 +593,7 @@ JS = r"""
     document.getElementById('annoText').value=anno.comment||'';
     setType(anno.type||'文字');
     document.getElementById('annoSave').textContent='更新';
+    hideFab();
     pop.style.display='block';
     pop.style.left=Math.max(8,(window.innerWidth-300)/2)+'px';
     pop.style.top=Math.max(8,(window.innerHeight-220)/2)+'px';
