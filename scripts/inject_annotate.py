@@ -108,7 +108,7 @@ HTML = r"""
   <div class="list" id="annoList"></div>
 </aside>
 <div class="anno-pop" id="annoPop" style="display:none">
-  <textarea id="annoText" placeholder="这里写要改什么…（可留空，仅标记位置）"></textarea>
+  <textarea id="annoText" placeholder="点此输入要改什么…（可留空，仅标记位置）"></textarea>
   <div class="row">
     <div class="seg" id="annoType">
       <button data-v="文字" class="on">文字</button><button data-v="图片">图片</button><button data-v="版式">版式</button>
@@ -242,7 +242,8 @@ JS = r"""
     if(y>window.innerHeight-220)y=r.top-226;
     pop.style.left=Math.max(8,x)+'px'; pop.style.top=Math.max(8,y)+'px';
     document.getElementById('annoLoc').textContent=(ch.title||'')+' · '+(pendingCtx.context.nearestHeading||'(章首)');
-    document.getElementById('annoText').focus();
+    /* 注意：此处不抢焦点（不调 annoText.focus()）。聚焦 textarea 会清空 Shadow 内文字选区，
+       导致用户无法复制刚选中的文字。写备注时用户自行点文本框即可。 */
   }
   function hidePop(){var p=document.getElementById('annoPop'); if(p)p.style.display='none'; pendingCtx=null; editingId=null;}
 
