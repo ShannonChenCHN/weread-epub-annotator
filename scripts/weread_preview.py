@@ -49,7 +49,7 @@ except ImportError:
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
     from inject_annotate import CSS as ANNO_CSS, HTML as ANNO_HTML, JS as ANNO_JS
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 CONT_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
 OPF_NS = "http://www.idpf.org/2007/opf"
@@ -420,10 +420,167 @@ _SONG_NAMES = ("思源宋体", "Source Han Serif SC", "SourceHanSerifCN",
 
 
 def remap_kai_for_display(css: str) -> str:
-    for name in _KAI_NAMES:
-        css = css.replace('"%s"' % name, '%s,"%s"' % (KAI_LOCAL, name))
-        css = css.replace("'%s'" % name, "%s,'%s'" % (KAI_LOCAL, name))
-    return css
+    """把含楷体别名的 font-family 栈开头补上本机楷体名（每个声明只补一次，保留原格式）。"""
+    if not any(n in css for n in _KAI_NAMES):
+        return css
+
+    def rep(m):
+        head, val = m.group(1), m.group(2)
+        if not any(n in val for n in _KAI_NAMES):
+            return m.group(0)
+        if re.search(r'Kaiti SC|STKaiti|"KaiTi"', val):
+            return m.group(0)
+        for name in _KAI_NAMES:
+            for q in ('"%s"' % name, "'%s'" % name):
+                if q in val:
+                    return head + val.replace(q, KAI_LOCAL + "," + q, 1)
+        return m.group(0)
+
+    return re.sub(r"(font-family\s*:\s*)([^;}]+)", rep, css, flags=re.I)
+
+
+# --------------------------------------------------------------------------- #
+# 预览兜底楷体（webfont）
+#
+# 背景（2026-10-28 定位）：Kaiti SC / STKaiti / Songti SC 在 iOS 上都是
+# 「downloadable」而非预装，Safari 也不会因为 CSS 里点了名就去下载，
+# 于是 iPhone 上楷体引文会静默回退成苹方（黑体）——用户看到「棕色还在、字变黑体」。
+#
+# 对策：把开源楷体「霞鹜文楷」（SIL OFL 1.1，可自由嵌入/分发）子集化后
+# 以 data URI 内嵌进预览页，只作为「楷体栈全部 miss」时的最后兜底：
+#   * macOS 有真 Kaiti SC，仍优先命中，观感不变；
+#   * iPhone / Android / Windows 缺字体时落到霞鹜文楷，至少「哪些段落是楷体」看得出来；
+#   * 只影响预览页，**不写回 EPUB**，字形是近似（非汉仪楷体S 本身），最终仍以真机为准。
+# --------------------------------------------------------------------------- #
+KAI_WEBFAMILY = "WRPreviewKai"
+KAI_WEBFONT_NAME = "LXGWWenKai-Regular.ttf"
+KAI_WEBFONT_URL = ("https://github.com/lxgw/LxgwWenKai/releases/download/"
+                   "v1.520/LXGWWenKai-Regular.ttf")
+KAI_FONT_CACHE = Path.home() / ".cache" / "weread-preview" / "fonts"
+_KAI_BASE_CHARS = ("0123456789"
+                   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                   "，。、；：？！“”‘’（）《》〈〉【】—…·～％＋－＝／＃＠＆＊")
+# 楷体段落定位：class 里带独立的 kai 词元（quote-kai / kai / kai-bold 都算）
+_KAI_EL_RE = re.compile(
+    r'<([a-zA-Z][\w:-]*)\b[^>]*\bclass\s*=\s*"[^"]*(?<![a-z])kai(?![a-z])[^"]*"[^>]*>(.*?)</\1>',
+    re.S | re.I)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def kai_charset(chapters) -> str:
+    """收集楷体段落里出现过的字符；一个都没找到则退回全书文字。"""
+    chars = set()
+    for ch in chapters:
+        for m in _KAI_EL_RE.finditer(ch.get("html") or ""):
+            chars.update(_TAG_RE.sub("", m.group(2)))
+    if len(chars) < 50:                     # 类名风格不固定时，宁可全量也别漏字
+        for ch in chapters:
+            chars.update(_TAG_RE.sub("", ch.get("html") or ""))
+    chars.update(_KAI_BASE_CHARS)
+    chars.discard("\n")
+    chars.discard("\t")
+    return "".join(sorted(chars))
+
+
+def _find_kai_web_font(log=None):
+    """按 assets → 缓存 → 下载 的顺序找霞鹜文楷本体。"""
+    cands = [Path(__file__).resolve().parent.parent / "assets" / KAI_WEBFONT_NAME,
+             KAI_FONT_CACHE / KAI_WEBFONT_NAME]
+    for c in cands:
+        try:
+            if c.exists() and c.stat().st_size > 1_000_000:
+                return c
+        except OSError:
+            pass
+    try:
+        import urllib.request
+        KAI_FONT_CACHE.mkdir(parents=True, exist_ok=True)
+        dst = KAI_FONT_CACHE / KAI_WEBFONT_NAME
+        if log:
+            log("首次运行：下载楷体兜底字体（霞鹜文楷，约 24 MB，只需一次）…")
+        urllib.request.urlretrieve(KAI_WEBFONT_URL, str(dst))
+        if dst.stat().st_size > 1_000_000:
+            return dst
+    except Exception:
+        return None
+    return None
+
+
+def build_kai_web_font(text: str, log=None):
+    """把字符集子集化成 woff2 并返回 base64；依赖缺失/网络失败时返回 None。"""
+    try:
+        from fontTools.subset import Subsetter, Options, load_font
+    except Exception:
+        if log:
+            log("⚠️ 未安装 fontTools/brotli，跳过楷体兜底（pip install fonttools brotli）")
+        return None
+    import base64
+    import hashlib
+    src = _find_kai_web_font(log)
+    if src is None:
+        if log:
+            log("⚠️ 取不到霞鹜文楷字体文件，跳过楷体兜底")
+        return None
+    key = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    cache = KAI_FONT_CACHE / "subset"
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    out = cache / ("kai-%s.woff2" % key)
+    if not out.exists():
+        try:
+            opts = Options()
+            opts.desubroutinize = True
+            font = load_font(str(src), Options())
+            ss = Subsetter(options=opts)
+            ss.populate(text=text)
+            ss.subset(font)
+            # 注意：API 用法下 Options.flavor 不生效，必须直接设置 font.flavor，
+            # 否则存出来的是裸 TTF，浏览器按 woff2 解析会静默失败（2026-10-28 实测踩坑）
+            font.flavor = "woff2"
+            font.save(str(out))
+        except Exception:
+            return None
+    try:
+        return base64.b64encode(out.read_bytes()).decode("ascii")
+    except OSError:
+        return None
+
+
+def kai_font_face_css(b64: str) -> str:
+    return (
+        "/* ==== 预览兜底楷体：霞鹜文楷（SIL OFL 1.1）子集，仅内嵌于本预览页，不写回 EPUB ==== */\n"
+        '@font-face{font-family:"%s";src:url(data:font/woff2;base64,%s) format("woff2");'
+        "font-weight:normal;font-style:normal;font-display:swap}\n" % (KAI_WEBFAMILY, b64)
+    )
+
+
+def append_kai_display_fallback(css: str, family: str = KAI_WEBFAMILY) -> str:
+    """把 webfont 兜底插到「楷体候选族」的最后一位之后、黑体类回退族之前。
+
+    关键：不能插在通用族之前——作者栈里 "PingFang SC" 这类黑体排在 sans-serif 前面，
+    插在通用族前就永远轮不到兜底（iPhone 有苹方，会先命中苹方）。
+    """
+    kai_names = {n.lower() for n in _KAI_NAMES} | {"kaiti sc", "stkaiti", "kaiti",
+                                                   "kaiti tc", "biaukai"}
+
+    def rep(m):
+        head, val = m.group(1), m.group(2)
+        if not any(n in val for n in _KAI_NAMES):
+            return m.group(0)
+        if ('"%s"' % family) in val or ("'%s'" % family) in val:
+            return m.group(0)
+        last = None
+        for tok in re.finditer(r"[^,]+", val):
+            bare = tok.group(0).strip().strip('"').strip("'").lower()
+            if bare in kai_names:
+                last = tok.end()
+        if last is None:
+            return m.group(0)
+        return head + val[:last] + ',"%s"' % family + val[last:]
+
+    return re.sub(r"(font-family\s*:\s*)([^;}]+)", rep, css, flags=re.I)
 
 
 def remap_song_for_display(css: str) -> str:
@@ -1091,6 +1248,10 @@ html[data-ui="light"] .phone{background:#1d1f23}
   .screen{padding:24px 22px 40vh}
 }
 </style>
+<!-- 楷体兜底 webfont 必须放文档层：放进 Shadow DOM 时，Chrome 的字体族列表回退
+     会跳过 @font-face（单名直命中没问题），导致「楷体栈 miss 后轮不到兜底」。
+     文档层 font-face 对影子树内容同样生效（Safari/Chrome 标准行为）。 -->
+<style id="wr-kai-font">__KAI_FONT_CSS__</style>
 __ANNO_CSS__
 </head>
 <body>
@@ -1111,6 +1272,8 @@ __ANNO_CSS__
   <main class="stage">
     <div class="banner"><b>本地模拟预览</b>，非微信读书原生引擎；已按真机默认行为（模拟层全开）模拟「样式丢弃」：复杂选择器 / @media、内联 style、text-indent / line-height、px 字号、图片按版心缩放、hr 右侧边距均已按真机处理。
       字体栈（汉仪楷体S）本机多半不存在，已自动映射为本机楷体（Kaiti SC）<b>近似显示</b>；
+      若本机连楷体都没有（iPhone / Android / Windows 常态，Kaiti SC 在 iOS 上是「可下载」非预装），
+      会回落到内嵌的开源楷体<b>霞鹜文楷</b>子集兜底，保证「哪些段落是楷体」看得出来（字形为近似，非汉仪楷体S）；
       官方类名 <code>firstTitle/thirdTitle/copyRightTitle</code> 已按真机规律强制显示为宋体——最终效果仍需真机确认。</div>
     <div class="wrap">
       <div class="phone"><div class="screen theme-white" id="wr-screen"><div id="wr-host"></div></div></div>
@@ -1407,7 +1570,8 @@ def collapse_toc(chapters) -> list:
     return out
 
 
-def render(book: Book, chapters, css_blocks, report: Report, stats: dict, ui: str, annotate: bool = True) -> str:
+def render(book: Book, chapters, css_blocks, report: Report, stats: dict, ui: str,
+           annotate: bool = True, kai_font_css: str = "") -> str:
     data = {
         "meta": book.meta,
         "css": css_blocks,
@@ -1423,6 +1587,8 @@ def render(book: Book, chapters, css_blocks, report: Report, stats: dict, ui: st
     out = out.replace("__SUB__", "· %d 章 · %s" % (len(book.spine), data["generated"]))
     out = out.replace("__UI__", ui)
     out = out.replace("__STRUCT__", json.dumps({t.lower(): 1 for t in STRUCT_TAGS}))
+    # 直接注入 CSS 文本（@font-face 无 < 字符，无需转义）
+    out = out.replace("__KAI_FONT_CSS__", kai_font_css or "")
     if annotate:
         out = out.replace("__ANNO_CSS__", ANNO_CSS)
         out = out.replace("__ANNO_HTML__", ANNO_HTML)
@@ -1500,6 +1666,11 @@ def main(argv=None):
                     help="不内嵌图片，保留 OEBPS/images/ 相对路径（file:// 直开时用）")
     ap.add_argument("--img-max", type=int, default=720,
                     help="内嵌图片最长边上限 px，超出等比缩小（默认 720；0=不缩放）")
+    ap.add_argument("--kai-fallback", dest="kai_fallback", action="store_true", default=True,
+                    help="内嵌开源楷体（霞鹜文楷）子集作为兜底，让 iPhone/Android/Windows 上"
+                         "也能看出哪些段落是楷体（默认开；只影响预览，不写回 EPUB）")
+    ap.add_argument("--no-kai-fallback", dest="kai_fallback", action="store_false",
+                    help="不内嵌兜底楷体，严格只用本机字体（macOS 上观感最接近真机）")
     ap.add_argument("--version", action="version", version="weread_preview %s" % VERSION)
     args = ap.parse_args(argv)
 
@@ -1568,6 +1739,19 @@ def main(argv=None):
     engine_css = engine_serif_css()
 
     chapters = book.chapters()
+
+    # 楷体兜底 webfont（缺字体设备上仍有楷体观感）；只内嵌进预览页，不写回 EPUB
+    kai_css = ""
+    if getattr(args, "kai_fallback", True):
+        charset = kai_charset(chapters)
+        b64 = build_kai_web_font(charset, log=None if args.quiet else print)
+        if b64:
+            kai_css = kai_font_face_css(b64)
+            cleaned = [append_kai_display_fallback(b) for b in cleaned]
+            if not args.quiet:
+                print("   楷体兜底: 已内嵌霞鹜文楷子集 %d 字 / %.0f KB"
+                      % (len(charset), len(b64) / 1024))
+
     # 每章只挂载自己 <link> 的 CSS（修复：以前把 manifest 里全部 CSS 注入每一页，
     # 「整页背景」类独立 CSS 会在预览里全书误染，导致误判真机效果）
     css_index = {p: i for i, p in enumerate(cleaned_paths)}
@@ -1583,7 +1767,8 @@ def main(argv=None):
     embed_stat = None
     if args.embed_img:
         embed_stat = embed_images(chapters, root, args.img_max)
-    html = render(book, chapters, css_blocks, rep, stats, args.ui, annotate=args.annotate)
+    html = render(book, chapters, css_blocks, rep, stats, args.ui, annotate=args.annotate,
+                  kai_font_css=kai_css)
     html_path.write_text(html, "utf-8")
 
     md = render_markdown(book, rep, stats)

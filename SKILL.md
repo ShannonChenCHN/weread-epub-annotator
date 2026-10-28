@@ -100,6 +100,18 @@ S03 manifest 缺文件、S04 资源未注册、S05 元数据缺失、S06/S07/S08
 - 本预览是**模拟**，不是微信读书的自研排版引擎（DTCoreText）。颜色/粗细/字号/背景/边框/
   表格/列表/图片缩放等可信。**字体**：引文楷体栈已映射为本机 Kaiti SC 近似显示
   （2026-10-10 起，可本地核对哪些段落是楷体），但最终字体效果仍需真机确认。
+- **iPhone / iPad / Android / Windows 上预览看不到楷体是设备字体问题，不是 CSS 错了**
+  （2026-10-28 定位）：`Kaiti SC`/`STKaiti`/`Songti SC` 在 iOS 上都是「downloadable」非预装，
+  Safari 也不会因为 CSS 点名就去下载，于是楷体栈全部 miss、静默回退苹方——表现为
+  「引文的棕色还在、字形变黑体」。对策（1.1.0 起，`--no-kai-fallback` 可关）：预览页自动内嵌
+  开源楷体**霞鹜文楷**（SIL OFL 1.1）的**按书子集**（几百 KB，data URI，仍单文件自包含），
+  排在楷体栈全部候选之后、黑体回退之前，只保证「哪些段落是楷体」在任何设备都看得出来；
+  macOS 有真 Kaiti SC 时优先命中，观感不变。**只影响预览页，不写回 EPUB；字形是近似，非汉仪楷体S。**
+  ⚠️ 实现要点：`@font-face` 必须注入**文档层**（`<style id="wr-kai-font">`），放进 Shadow DOM 时
+  Chrome 的字体族列表回退会跳过 webfont（单名直命中没问题），兜底永远轮不到——2026-10-28 实测踩坑。
+  首次运行会把霞鹜文楷本体（约 24MB）下载到 `~/.cache/weread-preview/fonts/`，之后离线可用；
+  依赖 fontTools+brotli（`pip install fonttools brotli`），缺了会跳过兜底并提示。
+  宋体（`firstTitle` 等官方类名）在 iOS 上同样缺失，暂无兜底，iPhone 上标题会显示成苹方。
 - 分页、弹注、锚点跳转这三类行为真机差异大，预览只做体检提示，不模拟交互。
 - ⚠️ **本地预览 / iBooks 一致 ≠ 微信读书一致（2026-10-10 实测）**：同一份版权页，
   iBooks 渲染与本地预览一致，微信读书却"完全不一样"——`text-align:center` /
