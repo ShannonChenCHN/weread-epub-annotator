@@ -1430,8 +1430,8 @@ function applyEmu(){
     s += '.wr-body img{max-width:100% !important;height:auto !important}';
     s += '.wr-body figure img{margin:0;display:block}';
   }
-  /* 注字角标（微信读书原生弹注）：影子树内按 1em 内联显示，可点击 */
-  s += '.wr-body img.qqreader-footnote{width:1em !important;height:auto !important;vertical-align:middle !important;cursor:pointer !important;margin:0 .06em}';
+  /* 注字角标（微信读书原生弹注）：影子树内按 1em 上标（vertical-align:super）显示，贴前字右上角，可点击 */
+  s += '.wr-body img.qqreader-footnote{width:1em !important;height:auto !important;vertical-align:super !important;cursor:pointer !important;margin:0 0 0 .04em}';
   SHADOW.querySelector('#wr-emu').textContent = s;
 }
 
