@@ -104,6 +104,13 @@ CSS = r"""
   .anno-panel.open{transform:none}
   .anno-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.38);z-index:35}
 }
+/* 批注定位失败提示 */
+.wr-toast{position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:10001;
+  background:rgba(28,31,36,.92);color:#fff;padding:9px 16px;border-radius:8px;
+  font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:80vw;text-align:center;
+  opacity:0;transition:opacity .2s;pointer-events:none}
+.wr-toast.show{opacity:1}
 </style>
 <!-- /wr-anno:css -->
 """
@@ -147,14 +154,51 @@ JS = r"""
 <script>
 (function(){
   'use strict';
-  var LS_KEY='wr-anno-v1';
-  var STORE=(function(){try{var s=window.localStorage;return{get:function(k){try{return s.getItem(k);}catch(e){return null;}},set:function(k,v){try{s.setItem(k,v);}catch(e){}}};}catch(e){return{get:function(){return null;},set:function(){}};}})();
+  var LS_KEY='wr-anno-v1';  /* 占位：DATA 解析后按 bookId 重命名为 wr-anno-v1-<bookId>，按书隔离 */
+  var STORE=(function(){try{var s=window.localStorage;return{
+    get:function(k){try{return s.getItem(k);}catch(e){return null;}},
+    set:function(k,v){try{s.setItem(k,v);}catch(e){}},
+    del:function(k){try{s.removeItem(k);}catch(e){}},
+    keys:function(){try{return Object.keys(s);}catch(e){return [];}}
+  };}catch(e){return{get:function(){return null;},set:function(){},del:function(){},keys:function(){return [];}};}})();
   function genId(){return 'a'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+  /* 同步 SHA-1（与 weread_preview.py 的 hashlib.sha1(utf8) 对齐），用于复算「改前批注键」找回同书历史批注 */
+  function sha1Hex(msg){
+    function rotl(n,c){return ((n<<c)|(n>>>(32-c)))>>>0;}
+    var bytes=unescape(encodeURIComponent(msg));   /* UTF-8 → 拉丁1字节串 */
+    var bitLen=bytes.length*8;
+    bytes+=String.fromCharCode(0x80);
+    while(bytes.length%64!==56) bytes+=String.fromCharCode(0);
+    bytes+=String.fromCharCode(0,0,0,0);           /* 64 位大端长度的高 32 位 */
+    for(var i=3;i>=0;i--) bytes+=String.fromCharCode((bitLen>>>(i*8))&0xff);
+    var H=[0x67452301,0xEFCDAB89,0x98BADCFE,0x10325476,0xC3D2E1F0];
+    for(var off=0;off<bytes.length;off+=64){
+      var w=[];
+      for(i=0;i<16;i++){
+        var o=off+i*4;
+        w[i]=((bytes.charCodeAt(o)&0xff)<<24)|((bytes.charCodeAt(o+1)&0xff)<<16)|((bytes.charCodeAt(o+2)&0xff)<<8)|(bytes.charCodeAt(o+3)&0xff);
+      }
+      for(i=16;i<80;i++) w[i]=rotl(w[i-3]^w[i-8]^w[i-14]^w[i-16],1);
+      var a=H[0],b=H[1],c=H[2],d=H[3],e=H[4];
+      for(i=0;i<80;i++){
+        var f,k;
+        if(i<20){f=(b&c)|((~b)&d);k=0x5A827999;}
+        else if(i<40){f=b^c^d;k=0x6ED9EBA1;}
+        else if(i<60){f=(b&c)|(b&d)|(c&d);k=0x8F1BBCDC;}
+        else{f=b^c^d;k=0xCA62C1D6;}
+        var tmp=(rotl(a,5)+f+e+k+w[i])>>>0;
+        e=d;d=c;c=rotl(b,30);b=a;a=tmp;
+      }
+      H[0]=(H[0]+a)>>>0;H[1]=(H[1]+b)>>>0;H[2]=(H[2]+c)>>>0;H[3]=(H[3]+d)>>>0;H[4]=(H[4]+e)>>>0;
+    }
+    function hex(n){var s='';for(var j=7;j>=0;j--)s+=((n>>>(j*4))&0xf).toString(16);return s;}
+    return hex(H[0])+hex(H[1])+hex(H[2])+hex(H[3])+hex(H[4]);
+  }
   function load(){
     var a; try{a=JSON.parse(STORE.get(LS_KEY)||'[]')||[];}catch(e){a=[];}
-    /* 迁移：给旧批注（无 id）补 id，便于编辑/删除按 id 精确命中 */
+    /* 迁移：给旧批注（无 id）补 id，便于编辑/删除按 id 精确命中；无 bookId 则打上本书标记（自描述后不会被别书误拉） */
     var changed=false;
-    for(var i=0;i<a.length;i++){ if(!a[i].id){ a[i].id=genId(); changed=true; } }
+    for(var i=0;i<a.length;i++){ if(!a[i].id){ a[i].id=genId(); changed=true; } if(!a[i].bookId){ a[i].bookId=BOOK_ID; changed=true; } }
     if(changed) save(a);
     return a;
   }
@@ -164,6 +208,70 @@ JS = r"""
   function getSR(){ return HOST && HOST.shadowRoot; }
   var SHADOW=getSR();
   var DATA=JSON.parse(document.getElementById('wr-data').textContent);
+
+  /* —— 按书隔离批注：同一浏览器源下打开多本书时互不串数据 —— */
+  function hashStr(s){var h=0x811c9dc5;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,0x01000193);}return (h>>>0).toString(16);}
+  function deriveBookId(){
+    if(DATA && DATA.bookId) return String(DATA.bookId);
+    /* 旧预览页可能没有 bookId：用标题 + 章节文件路径兜底，保证仍按书区分 */
+    var s=((DATA&&DATA.meta&&DATA.meta.title)||'')+'|'+(DATA.chapters||[]).map(function(c){return c.file||'';}).join(',');
+    return 'h'+hashStr(s);
+  }
+  var BOOK_ID=deriveBookId();
+  LS_KEY='wr-anno-v1'+(BOOK_ID?'-'+BOOK_ID:'');
+  /* 一次性迁移：把历史上各键里「属于本书」的批注认领进当前稳定键，并清掉已迁空的旧键。
+     关键：当前 bookId 已改为「书名+作者」稳定值，不再随每次重建都变的 UID 漂移；
+     因此旧预览（键含旧 UID 哈希）里存的批注，这里按「源 xhtml 文件路径」归属回本书并合并，
+     从而同一本书跨版本（v11/v12/v13…）的批注在新生成的网页里都能看到。 */
+  (function migrate(){
+    try{
+      var NEW_ID=BOOK_ID;
+      /* 改前键 = sha1(title+creator)[:12]（旧版 weread_preview.py 的推导）：按 file 认领只对「本书旧键」和全局遗留键放行 */
+      var OLD_ID=sha1Hex(((DATA.meta&&DATA.meta.title)||'')+'\n'+((DATA.meta&&DATA.meta.creator)||'')).slice(0,12);
+      var mine={};(DATA.chapters||[]).forEach(function(c){if(c.file)mine[c.file]=1;});
+      var cur=JSON.parse(STORE.get(LS_KEY)||'[]')||[],seen={};
+      cur.forEach(function(a){if(a&&a.id)seen[a.id]=1;});
+      function stamp(a){ if(a&&!a.bookId) a.bookId=NEW_ID; return a; }
+      /* 按 file 认领：只用于「确属本书」的键（本书旧键 / 全局遗留键） */
+      function harvestByFile(arr){
+        if(!arr||!arr.length) return [];
+        var moved=[];
+        arr.forEach(function(a){ if(a&&a.file&&mine[a.file]&&!seen[a.id]){ stamp(a);cur.push(a);seen[a.id]=1;moved.push(a); } });
+        return moved;
+      }
+      /* 按 bookId 认领：用于其他所有键，只收「明确写着本书」的批注，杜绝跨书按文件名误拉 */
+      function harvestByBookId(arr){
+        if(!arr||!arr.length) return [];
+        var moved=[];
+        arr.forEach(function(a){ if(a&&a.bookId===NEW_ID&&!seen[a.id]){ cur.push(a);seen[a.id]=1;moved.push(a); } });
+        return moved;
+      }
+      function pullFrom(key,fn){
+        try{
+          var arr=JSON.parse(STORE.get(key)||'[]')||[];
+          if(!arr.length){ if(key!==LS_KEY) STORE.del(key); return; }
+          var moved=fn(arr);
+          if(moved.length){
+            var rest=arr.filter(function(a){return moved.indexOf(a)===-1;});
+            if(rest.length) STORE.set(key,JSON.stringify(rest)); else STORE.del(key);
+          }
+        }catch(e){}
+      }
+      /* 1) 本书改前键（title+creator）：找回同书历史批注（跨版本保留的关键路径） */
+      if('wr-anno-v1-'+OLD_ID!==LS_KEY) pullFrom('wr-anno-v1-'+OLD_ID,harvestByFile);
+      /* 2) 旧版单一全局键 wr-anno-v1（无按书隔离时代的池子） */
+      if('wr-anno-v1'!==LS_KEY) pullFrom('wr-anno-v1',harvestByFile);
+      /* 3) 其他按书键：只认 bookId===NEW_ID 的批注，绝不按文件名跨书拉取 */
+      STORE.keys().forEach(function(k){
+        if(k===LS_KEY || k==='wr-anno-v1' || k==='wr-anno-v1-'+OLD_ID) return;
+        if(k.indexOf('wr-anno-v1')!==0) return;   /* 只处理本插件批注键，不碰其他 */
+        pullFrom(k,harvestByBookId);
+      });
+      /* 4) 当前键内全部批注打上 bookId：自描述后不会被别书误拉 */
+      cur.forEach(stamp);
+      STORE.set(LS_KEY,JSON.stringify(cur));
+    }catch(e){}
+  })();
 
   /* 高亮样式必须注入 Shadow 内：light-DOM 的 CSS 穿透不了 Shadow DOM 边界，
      这正是之前"整块高亮看不到"的根因。引擎每次 build() 会清空 shadow 子节点，
@@ -378,7 +486,7 @@ JS = r"""
     } else {
       /* 新建态 */
       if(!pendingCtx)return;
-      annos.push({id:genId(), file:pendingCtx.file, chapterTitle:pendingCtx.chapterTitle, chapterIdx:pendingCtx.chapterIdx,
+      annos.push({id:genId(), bookId:BOOK_ID, file:pendingCtx.file, chapterTitle:pendingCtx.chapterTitle, chapterIdx:pendingCtx.chapterIdx,
         snippet:pendingCtx.snippet, selectedText:pendingCtx.selectedText, context:pendingCtx.context,
         comment:text, type:curType, createdAt:new Date().toISOString()});
       save(annos); hidePop();
@@ -454,25 +562,35 @@ JS = r"""
   })();
 
   /* ---- 定位 / 常驻标记（左侧按严重级上色的细条，做总览） ---- */
+  /* 归一化空白：把各类空白/全角空格压成单空格并去两边，消除 OCR/PDF 正文与选区文本的空白/换行差异 */
+  function normWS(s){ return (s||'').replace(/\s+/g,' ').replace(/　/g,' ').trim(); }
   function locateEl(anno){
     var S=getSR(); var sec=S&&S.querySelector('.wr-secs .wr-sec');
     if(!sec)return null;
     if(anno.chapterIdx!=null&&chapterIdxOf(sec)!==anno.chapterIdx)return null;
-    /* 定位串优先级：60 字 snippet → 完整 selectedText（更长的原文更易命中）；
-       任一枚活即返回，避免「匹配不到整条丢失」。 */
-    var needles=[];
-    if(anno.snippet) needles.push(anno.snippet);
-    if(anno.selectedText && anno.selectedText!==anno.snippet) needles.push(anno.selectedText);
+    /* 定位串：优先完整 selectedText（更长原文更易命中），其次 60 字 snippet；
+       均先做空白归一化，避免 OCR 正文与选区文本的空白差异导致整条匹配失败。 */
+    var raw=[];
+    if(anno.selectedText) raw.push(anno.selectedText);
+    if(anno.snippet && anno.snippet!==anno.selectedText) raw.push(anno.snippet);
+    var needles=[]; raw.forEach(function(r){ var n=normWS(r); if(n) needles.push(n); });
     if(needles.length){
       var blocks=sec.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,figure,li,blockquote,table,.fig-c');
-      for(var n=0;n<needles.length;n++){
+      var btext=[]; for(var i=0;i<blocks.length;i++) btext[i]=normWS(blocks[i].textContent||'');
+      function search(needle, preferHeading){
         var cand=[];
-        for(var i=0;i<blocks.length;i++){var t=blocks[i].textContent||''; if(t.indexOf(needles[n])>=0)cand.push(blocks[i]);}
-        if(anno.context&&anno.context.nearestHeading){
-          for(var j=0;j<cand.length;j++){ if(nearestHeading(cand[j],sec)===anno.context.nearestHeading) return cand[j]; }
+        for(var i=0;i<blocks.length;i++){ if(btext[i].indexOf(needle)>=0) cand.push(blocks[i]); }
+        if(preferHeading && anno.context && anno.context.nearestHeading){
+          var nh=normWS(anno.context.nearestHeading);
+          for(var j=0;j<cand.length;j++){ if(normWS(nearestHeading(cand[j],sec))===nh) return cand[j]; }
         }
-        if(cand.length)return cand[0];
+        if(cand.length) return cand[0];
+        return null;
       }
+      for(var n=0;n<needles.length;n++){ var r=search(needles[n], true); if(r) return r; }
+      /* 部分匹配兜底：取最长 needle 前 24 字，应对超长选区或仅首部一致的情况 */
+      var longest=needles.slice().sort(function(a,b){return b.length-a.length;})[0]||'';
+      if(longest.length>24){ var head=longest.slice(0,24); var r2=search(head, true); if(r2) return r2; }
     }
     if(anno.type==='图片'&&anno.context&&anno.context.figIndex!=null){
       var figs=sec.querySelectorAll('figure,.fig-c'); if(figs[anno.context.figIndex])return figs[anno.context.figIndex];
@@ -509,11 +627,18 @@ JS = r"""
     var toc=document.getElementById('toc'); if(!toc) return false;
     var as=toc.querySelectorAll('a[data-i]');
     if(idx!=null){
+      /* 取「区间最窄」的命中条目：章级条目 data-i===data-last（宽度 0）优先于
+         覆盖整篇的「篇」条目。否则跨章/篇点击会先命中宽区间的「篇」→ mount 篇扉页 → 跳篇首页。 */
+      var best=null, bestW=Infinity;
       for(var i=0;i<as.length;i++){
         var lo=parseInt(as[i].getAttribute('data-i'),10);
         var hi=as[i].getAttribute('data-last'); hi=(hi==null)?lo:parseInt(hi,10);
-        if(idx>=lo && idx<=hi){ try{as[i].click();}catch(e){} return true; }
+        if(idx>=lo && idx<=hi){
+          var w=hi-lo;
+          if(w<bestW){ bestW=w; best=as[i]; if(w===0) break; }
+        }
       }
+      if(best){ try{best.click();}catch(e){} return true; }
     }
     if(title){
       for(var j=0;j<as.length;j++){
@@ -542,22 +667,27 @@ JS = r"""
     })(root);
     return out;
   }
-  /* 在 block 内精确包裹 selectedText 为 <mark class="wr-anno-flash">；跨节点时退回整块闪烁 */
+  /* 在 block 内精确包裹 selectedText 为 <mark class="wr-anno-flash">；跨节点时退回整块闪烁。
+     匹配对 needle 与块内文本都做空白归一化，避免 OCR 空白差异导致「定位到段落却高亮整段」。 */
   function wrapSnippet(block, text){
-    text=(text||'').replace(/\s+/g,' ').trim();
+    text=normWS(text);
     if(!text) return null;
     var nodes=collectTextNodes(block);
     if(!nodes.length) return null;
-    var full=nodes.map(function(x){return x.nodeValue;}).join('');
-    var idx=full.indexOf(text);
-    if(idx<0){ text=text.slice(0,Math.max(8,Math.floor(text.length/2))); idx=full.indexOf(text); }
+    var raws=nodes.map(function(x){return x.nodeValue;});
+    /* 逐节点归一化后以单空格连接，构造与 normWS 等价的归一化全文，同时保留节点边界信息用于还原偏移 */
+    var normParts=raws.map(function(r){return normWS(r);});
+    var fullNorm=normParts.join(' ');
+    var idx=fullNorm.indexOf(text);
+    if(idx<0){ text=text.slice(0,Math.max(8,Math.floor(text.length/2))); idx=fullNorm.indexOf(text); }
     if(idx<0) return null;
-    var end=idx+text.length, acc=0, sNode=null, sOff=0, eNode=null, eOff=0;
+    var acc=0, sNode=null, sOff=0, eNode=null, eOff=0, end=idx+text.length;
     for(var i=0;i<nodes.length;i++){
-      var len=nodes[i].nodeValue.length;
-      if(sNode===null && acc+len>idx){ sNode=nodes[i]; sOff=idx-acc; }
-      if(acc+len>=end){ eNode=nodes[i]; eOff=end-acc; break; }
-      acc+=len;
+      var L=normParts[i].length;
+      if(L===0) continue;
+      if(sNode===null && acc+L>idx){ sNode=nodes[i]; sOff=idx-acc; }
+      if(acc+L>=end){ eNode=nodes[i]; eOff=end-acc; break; }
+      acc+=L+1;   /* +1 抵消节点间那个连接空格 */
     }
     if(!sNode||!eNode) return null;
     var range=document.createRange();
@@ -571,15 +701,39 @@ JS = r"""
     }
     return mk;
   }
+  /* 轻提示：定位失败时给用户一句话反馈（不阻断、2.2s 淡出） */
+  function toast(msg){
+    var t=document.getElementById('wr-toast');
+    if(!t){ t=document.createElement('div'); t.id='wr-toast'; t.className='wr-toast'; document.body.appendChild(t); }
+    t.textContent=msg; t.classList.add('show');
+    clearTimeout(t.__toastTimer);
+    t.__toastTimer=setTimeout(function(){ t.classList.remove('show'); },2200);
+  }
   function flashAnno(anno){
     ensureShadowCss();   /* 关键：切章 build() 可能刚清空 Shadow 内高亮样式，此处同步补回，mark 才有 CSS 显形 */
     var block=locateEl(anno);
-    if(!block){ var sec=getSR()&&getSR().querySelector('.wr-secs .wr-sec'); block=sec; }  /* 兜底：定位不到具体块就高亮整节 */
-    if(!block) return;
-    unwrapFlash();
-    block.scrollIntoView({block:'center'});
-    var mk=wrapSnippet(block, anno.selectedText);
-    if(!mk){ block.classList.add('wr-anno-flash-block'); setTimeout(function(){block.classList.remove('wr-anno-flash-block');},2700); }
+    if(block){
+      unwrapFlash();
+      block.scrollIntoView({block:'center'});
+      var mk=wrapSnippet(block, anno.selectedText);
+      if(!mk){ block.classList.add('wr-anno-flash-block'); setTimeout(function(){block.classList.remove('wr-anno-flash-block');},2700); }
+      return;
+    }
+    /* 精确定位不到：先退到最近小标题（比整章开头更准）；仍无则原地不动 + 提示——绝不跳到篇首页 */
+    var S=getSR(); var sec=S&&S.querySelector('.wr-secs .wr-sec'); var heading=null;
+    if(anno.context&&anno.context.nearestHeading&&sec){
+      var hs=sec.querySelectorAll('h1,h2,h3,h4');
+      var nh=normWS(anno.context.nearestHeading);
+      for(var i=0;i<hs.length;i++){ if(normWS(hs[i].textContent)===nh){ heading=hs[i]; break; } }
+    }
+    if(heading){
+      unwrapFlash();
+      heading.scrollIntoView({block:'center'});
+      heading.classList.add('wr-anno-flash-block'); setTimeout(function(){heading.classList.remove('wr-anno-flash-block');},2700);
+      toast('未找到精确位置，已跳到最近的小标题');
+      return;
+    }
+    toast('未找到该批注的位置');
   }
 
   /* ---- 列表 / 导出 ---- */
@@ -631,11 +785,30 @@ JS = r"""
         it.querySelector('.act-del').addEventListener('click',function(e){e.stopPropagation(); deleteAnno(a.id);});
         it.onclick=function(){
           ensureShadowCss();
-          var curSec=getSR()&&getSR().querySelector('.wr-secs .wr-sec');
-          if(a.chapterIdx!=null && curSec && chapterIdxOf(curSec)!==a.chapterIdx){
-            goChapter(a.chapterIdx, a.chapterTitle); applyHighlights(); /* 切章后即时补回常驻标记 */
+          function curTitleOf(sec){ var h=sec&&sec.querySelector('h1,h2,h3,h4'); return h?h.textContent.trim():''; }
+          function runFlash(){
+            var curSec=getSR()&&getSR().querySelector('.wr-secs .wr-sec');
+            var curIdx = curSec ? chapterIdxOf(curSec) : null;
+            var curTitle = curTitleOf(curSec);
+            /* 需要切章：当前章索引不符，或（无 chapterIdx 的旧批注）当前章标题与批注标题不一致 */
+            var needSwitch = (a.chapterIdx!=null && curIdx!==a.chapterIdx) ||
+                             (a.chapterIdx==null && a.chapterTitle && curTitle && curTitle!==a.chapterTitle);
+            if(needSwitch){
+              goChapter(a.chapterIdx, a.chapterTitle); applyHighlights(); /* 切章后即时补回常驻标记 */
+              /* 防御：等正确章真正挂载后再定位闪烁（应对任何异步重建，避免「在旧章里定位」） */
+              var tries=0;
+              var iv=setInterval(function(){
+                var s=getSR()&&getSR().querySelector('.wr-secs .wr-sec');
+                var ok = !s ? false :
+                  (a.chapterIdx!=null ? chapterIdxOf(s)===a.chapterIdx
+                                      : (a.chapterTitle ? curTitleOf(s)===a.chapterTitle : true));
+                if(ok || ++tries>40){ clearInterval(iv); flashAnno(a); }
+              },25);
+              return;
+            }
+            flashAnno(a);
           }
-          flashAnno(a);
+          runFlash();
         };
       });
     });
