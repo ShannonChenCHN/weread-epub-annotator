@@ -32,6 +32,7 @@ import bisect
 import json
 import posixpath
 import re
+import hashlib
 import shutil
 import sys
 import zipfile
@@ -280,9 +281,14 @@ class Book:
             for li in ol.findall(q(XHTML_NS, "li")):
                 a = li.find(q(XHTML_NS, "a"))
                 if a is not None and a.get("href"):
+                    # 剥掉 #锚点：path 只用于映射 spine 文件，带锚点永远匹配不上
+                    p = posixpath.normpath(posixpath.join(
+                        base, unquote_path(a.get("href")).split("#", 1)[0]))
+                    if p in ("", ".", "..") or p.endswith("/"):
+                        p = None
                     out.append({
                         "href": a.get("href"),
-                        "path": posixpath.normpath(posixpath.join(base, unquote_path(a.get("href")))),
+                        "path": p,
                         "title": re.sub(r"\s+", " ", "".join(a.itertext())).strip(),
                         "depth": depth,
                     })
@@ -320,9 +326,13 @@ class Book:
             c = np.find(NCX + "content")
             src = c.get("src") if c is not None else ""
             if src:
+                p = posixpath.normpath(posixpath.join(
+                    base, unquote_path(src).split("#", 1)[0]))
+                if p in ("", ".", "..") or p.endswith("/"):
+                    p = None
                 out.append({
                     "href": src,
-                    "path": posixpath.normpath(posixpath.join(base, unquote_path(src))),
+                    "path": p,
                     "title": text, "depth": depth,
                 })
             for sub in np.findall(NCX + "navPoint"):
@@ -1169,7 +1179,11 @@ select,input[type=text]{font:inherit;color:var(--ui-fg);background:transparent;
 .side li a.on{background:rgba(59,109,245,.14);color:var(--accent);font-weight:600}
 .side li .num{color:var(--ui-fg3);font-size:11px;margin-right:6px;font-variant-numeric:tabular-nums}
 .side li .cnt{float:right;color:var(--ui-fg3);font-size:10.5px;background:rgba(127,127,127,.14);
-  border-radius:8px;padding:0 6px;line-height:16px;margin-left:6px}
+border-radius:8px;padding:0 6px;line-height:16px;margin-left:6px}
+/* 两级目录：节（子级）样式 */
+.side ul.sub{margin:1px 0 4px;padding-left:14px}
+.side ul.sub li a{padding:3px 10px;font-size:12.5px;color:var(--ui-fg2);border-radius:5px}
+.side ul.sub li a.onsub{background:rgba(127,127,127,.12);color:var(--ui-fg)}
 .stage{flex:1;min-width:0;overflow:auto;padding:22px;display:flex;justify-content:center;
   align-items:flex-start;gap:20px;
   background:
@@ -1416,11 +1430,76 @@ function applyEmu(){
     s += '.wr-body img{max-width:100% !important;height:auto !important}';
     s += '.wr-body figure img{margin:0;display:block}';
   }
+  /* 注字角标（微信读书原生弹注）：影子树内按 1em 内联显示，可点击 */
+  s += '.wr-body img.qqreader-footnote{width:1em !important;height:auto !important;vertical-align:middle !important;cursor:pointer !important;margin:0 .06em}';
   SHADOW.querySelector('#wr-emu').textContent = s;
 }
 
 var sec = null;
-function mount(i){
+/* 在挂载的章节里按标题文本定位某个小节（精确优先，前缀兜底），返回元素 */
+function findHeading(sec, q){
+  q = (q||'').trim();
+  if(!q || !sec) return null;
+  var els = sec.querySelectorAll('h1,h2,h3,h4,h5,h6,[class*="Title"],[class*="title"]');
+  var k, cand = [], best = null, bestLen = -1;
+  for(k=0;k<els.length;k++){
+    var t = (els[k].textContent||'').trim();
+    if(t === q) return els[k];
+    cand.push({el:els[k], t:t});
+  }
+  for(k=0;k<cand.length;k++){
+    var s = cand[k].t;
+    if(s && (s.indexOf(q)===0 || q.indexOf(s)===0)){
+      if(s.length > bestLen){ bestLen = s.length; best = cand[k].el; }
+    }
+  }
+  return best;
+}
+/* 目标标题是不是本文件里的第一个标题？是则「文件顶部=该节」，不需要任何滚动 */
+function isFirstHeading(sec, el){
+  if(!sec || !el) return true;
+  var els = sec.querySelectorAll('h1,h2,h3,h4,h5,h6,[class*="Title"],[class*="title"]');
+  return !els.length || els[0] === el;
+}
+/* 命中后蓝色闪烁 1.8s（模拟层，不要求 EPUB 真有锚点） */
+function flashEl(el){
+  if(!el) return;
+  el.style.transition = 'background-color .25s ease';
+  el.style.backgroundColor = 'rgba(64,120,255,.20)';
+  setTimeout(function(){ if(el) el.style.backgroundColor = ''; }, 1800);
+}
+/* 把挂载章节滚到指定标题元素（仅在「目标不是文件首个标题」时调用）。
+   要点：① 绝对定位（scrollTop = 计算值），不用 +=，重复调用天然幂等；
+        ② 与目标差距 ≤4px 视为已就位，跳过——避免无意义微调；
+        ③ 章节内图片异步解码会改变标题纵向位置，故图片 load 后再校正一次。 */
+function scrollToHeading(sec, el){
+  if(!el) return;
+  function go(){
+    try {
+      var cont = (typeof isNarrow === 'function' && isNarrow()) ? null : SCREEN;
+      var er = el.getBoundingClientRect();
+      var want, curPos;
+      if(cont){
+        var sr = cont.getBoundingClientRect();
+        curPos = cont.scrollTop;
+        want = curPos + (er.top - sr.top) - 10;
+      } else {
+        curPos = window.pageYOffset || document.documentElement.scrollTop || 0;
+        want = curPos + er.top - 10;
+      }
+      if(want < 0) want = 0;
+      if(Math.abs(want - curPos) <= 4) return;   /* 已就位：不再微调 */
+      if(cont) cont.scrollTop = want; else window.scrollTo(0, want);
+    } catch(e){}
+  }
+  go();
+  var imgs = sec.querySelectorAll('img');
+  for(var i=0;i<imgs.length;i++){
+    if(!imgs[i].complete) imgs[i].addEventListener('load', go, {once:true});
+  }
+  setTimeout(go, 300);
+}
+function mount(i, targetTitle){
   active = i;
   /* 章节切换时按该章 <link> 换样式表（css 变了才重建 shadow） */
   var cssNeed = cssFor(i);
@@ -1455,26 +1534,48 @@ function mount(i){
   highlightToc(i);
   document.body.classList.remove('navopen');       // 窄屏选完章节收起目录抽屉
   if(isNarrow()) window.scrollTo(0, 0);
+  /* 点「节」：只有「目标节上方还有本文件里的其他内容」时才需要对齐到该节标题。
+     若目标就是文件首个标题 —— 文件顶部本来就是这一节，一律不滚动，
+     否则就会出现「已经跳到该节了、页面又自己往上移一点」的多余跳动。 */
+  if(targetTitle){
+    var _el = findHeading(sec, targetTitle);
+    if(_el && !isFirstHeading(sec, _el)){ flashEl(_el); scrollToHeading(sec, _el); }
+  }
 }
 
-/* ---- TOC ---- */
+/* ---- TOC（两级：章 / 节；无嵌套时回落扁平列表）---- */
 function renderToc(){
   var ul = document.getElementById('toc');
   var html = '';
   var list = DATA.toc || [];
-  for(var i=0;i<list.length;i++){
-    var idx = (typeof list[i].index === 'number') ? list[i].index : i;
-    var last = (typeof list[i].last === 'number') ? list[i].last : idx;
-    var t = (list[i].title || ('第 ' + (idx+1) + ' 节'));
-    var badge = (list[i].count > 1) ? '<span class="cnt">&times;' + list[i].count + '</span>' : '';
-    html += '<li><a href="#" data-i="' + idx + '" data-last="' + last + '" title="' + esc(t) + '"><span class="num">' + (i+1) + '</span>' + esc(t) + badge + '</a></li>';
+  var nested = list.some(function(it){ return it.children && it.children.length; });
+  function topLi(it, no){
+    var idx = (typeof it.index === 'number') ? it.index : no;
+    var last = (typeof it.last === 'number') ? it.last : idx;
+    var t = (it.title || ('第 ' + (idx+1) + ' 节'));
+    var badge = (it.count > 1) ? '<span class="cnt">&times;' + it.count + '</span>' : '';
+    var h = '<li><a href="#" data-i="' + idx + '" data-last="' + last + '" title="' + esc(t)
+          + '"><span class="num">' + no + '</span>' + esc(t) + badge + '</a>';
+    if(nested && it.children && it.children.length){
+      h += '<ul class="sub">';
+      for(var j=0;j<it.children.length;j++){
+        var c = it.children[j];
+        var ci = (typeof c.index === 'number') ? c.index : idx;
+        var ct = (c.title || '　');
+        h += '<li><a href="#" data-i="' + ci + '" data-last="' + ci + '" class="subitem" data-t="' + esc(ct) + '" title="' + esc(ct) + '">'
+          + esc(ct) + '</a></li>';
+      }
+      h += '</ul>';
+    }
+    return h + '</li>';
   }
+  for(var i=0;i<list.length;i++) html += topLi(list[i], i+1);
   ul.innerHTML = html;
   ul.addEventListener('click', function(e){
     var a = e.target.closest('a[data-i]');
     if(!a) return;
     e.preventDefault();
-    mount(parseInt(a.dataset.i,10));
+    mount(parseInt(a.dataset.i,10), a.dataset.t || null);
   });
 }
 function highlightToc(i){
@@ -1482,7 +1583,12 @@ function highlightToc(i){
   for(var k=0;k<as.length;k++){
     var lo = parseInt(as[k].dataset.i,10);
     var hi = (as[k].dataset.last === undefined) ? lo : parseInt(as[k].dataset.last,10);
-    as[k].classList.toggle('on', i >= lo && i <= hi);   // 合并条目用区间高亮
+    var hit = i >= lo && i <= hi;   // 合并条目用区间高亮
+    if(as[k].classList.contains('subitem')){
+      as[k].classList.toggle('onsub', hit);        // 节：浅色标记
+    }else{
+      as[k].classList.toggle('on', hit);           // 章：蓝色高亮
+    }
   }
   var cur = document.querySelector('#toc a.on');
   if(cur && cur.scrollIntoView) cur.scrollIntoView({block:'nearest'});
@@ -1546,6 +1652,67 @@ boot();
 </script>
 __ANNO_HTML__
 __ANNO_JS__
+<!-- fn-popup-shim: 微信读书原生「点注字角标弹注释框」的本地预览模拟（light DOM 弹层 + document 捕获阶段监听，跨 Shadow DOM 生效） -->
+<style id="fn-popup-style">
+#fn-popover{position:fixed;z-index:99999;max-width:80vw;max-height:62vh;overflow:auto;
+  background:#fffdf7;border:1px solid #e0c9a6;border-radius:10px;
+  box-shadow:0 6px 24px rgba(120,80,20,.22);padding:14px 16px 12px;
+  font-size:15px;line-height:1.75;color:#333;text-align:left;display:none;}
+#fn-popover .fn-close{position:absolute;top:2px;right:10px;cursor:pointer;color:#a08;font-size:18px;line-height:1;}
+#fn-popover .fn-body{margin-top:2px;padding-right:12px;}
+#fn-popover .fn-tag{display:inline-block;min-width:1.4em;text-align:center;
+  background:#e4711e;color:#fff;border-radius:50%;font-size:12px;padding:1px 4px;
+  margin-right:6px;vertical-align:middle;}
+</style>
+<script id="fn-popup-script">
+(function(){
+  function ensurePopover(){
+    var p=document.getElementById('fn-popover');
+    if(!p){
+      p=document.createElement('div');p.id='fn-popover';
+      p.innerHTML='<span class="fn-close" title="关闭">×</span><div class="fn-body"></div>';
+      document.body.appendChild(p);
+      p.querySelector('.fn-close').addEventListener('click',function(e){
+        e.stopPropagation();p.style.display='none';});
+    }
+    return p;
+  }
+  function findBadge(e){
+    var path=e.composedPath?e.composedPath():[];
+    for(var i=0;i<path.length;i++){
+      if(path[i]&&path[i].classList&&path[i].classList.contains('qqreader-footnote'))return path[i];
+    }
+    return null;
+  }
+  function onBadgeClick(e){
+    var badge=findBadge(e);
+    if(!badge)return;
+    e.preventDefault();e.stopPropagation();
+    var alt=badge.getAttribute('alt')||'';
+    var p=ensurePopover();
+    p.querySelector('.fn-body').innerHTML='<span class="fn-tag">注</span>'+alt.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    p.style.display='block';
+    var r=badge.getBoundingClientRect();
+    var pw=p.offsetWidth,ph=p.offsetHeight;
+    var left=Math.min(r.left,window.innerWidth-pw-12);
+    var top=r.bottom+6;
+    if(top+ph>window.innerHeight)top=Math.max(12,r.top-ph-6);
+    p.style.left=Math.max(12,left)+'px';
+    p.style.top=top+'px';
+  }
+  document.addEventListener('click',onBadgeClick,true);
+  document.addEventListener('click',function(e){
+    var p=document.getElementById('fn-popover');
+    if(!p||p.style.display==='none')return;
+    if(findBadge(e))return;
+    if(p.contains(e.target))return;
+    p.style.display='none';
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'){var p=document.getElementById('fn-popover');if(p)p.style.display='none';}
+  });
+})();
+</script>
 </body>
 </html>
 """
@@ -1570,13 +1737,83 @@ def collapse_toc(chapters) -> list:
     return out
 
 
+def nested_toc(book, chapters):
+    """目录抽屉用：两级目录（章 = nav/ncx depth 0，节 = depth ≥ 1）。
+
+    nav.xhtml / toc.ncx 本身就是层级结构，按 spine 拉平会丢掉「节」这一层。
+    这里把 depth 0 的条目作为章，其下 depth ≥ 1 的条目作为节挂进 children。
+    书里没有任何嵌套条目时返回 None，由调用方回落到 collapse_toc 的扁平列表。
+
+    - 组内多个 spine 文件（为绕硬分页拆出的 color01…colorNN）：章条目的
+      index 取 nav 指向的文件，last 按「下一章起点 - 1」扩展，保证高亮区间
+      覆盖整章的所有 spine 文件（含 nav 未列出的文件，如封面页）。
+    - 节条目全部指向同一章文件（本书情形）或章内不同锚点，跳转都是挂载
+      该章文件，index 取其 path 对应的 spine 序号（映射不到则回落章序号）。
+    """
+    entries = getattr(book, "toc", None) or []
+    if not any(e.get("depth", 0) > 0 for e in entries):
+        return None
+    file_idx = {}
+    for i, ch in enumerate(chapters):
+        file_idx.setdefault(ch.get("file"), i)
+    groups = []
+    for e in entries:
+        d = e.get("depth", 0)
+        t = (e.get("title") or "").strip()
+        p = e.get("path")
+        idx = file_idx.get(p)
+        if d <= 0:
+            # 连续同名章条目（拆文件绕硬分页）合并成一条
+            if t and groups and groups[-1]["title"] == t and groups[-1]["index"] == idx:
+                groups[-1]["count"] += 1
+                groups[-1]["last"] = idx
+                continue
+            groups.append({"title": t or "（未命名）", "index": idx,
+                           "last": idx, "count": 1, "children": []})
+        else:
+            if not groups:  # 异常：第一节前没有章条目，兜底建一个空章
+                groups.append({"title": "（未命名）", "index": idx, "last": idx,
+                               "count": 1, "children": []})
+            groups[-1]["children"].append({"title": t, "index": idx})
+    if not groups:
+        return None
+    n = len(chapters)
+    # 扩展每章的高亮区间：本章起点 → 下一章起点-1（封面等 nav 未列文件归入第一章）
+    for k, g in enumerate(groups):
+        nxt = None
+        for g2 in groups[k + 1:]:
+            if g2["index"] is not None:
+                nxt = g2["index"]
+                break
+        hi = (nxt - 1) if nxt is not None else (n - 1)
+        if g["index"] is None:
+            g["index"] = max(0, min(hi, n - 1))
+        g["last"] = max(g["last"] if g["last"] is not None else g["index"], hi)
+        for c in g["children"]:
+            if c["index"] is None:
+                c["index"] = g["index"]
+    return groups
+
+
 def render(book: Book, chapters, css_blocks, report: Report, stats: dict, ui: str,
            annotate: bool = True, kai_font_css: str = "") -> str:
+    # 稳定的按书标识：跨 EPUB 版本恒定（不随每次重建都会变的 UID / 内容哈希漂移）。
+    # 身份 = 书名 + 作者 + 出版方：同一本书各版本（重建改文案/CSS）共用同一批注键，旧批注可跨版本保留；
+    # 不同版本/不同书即便书名相同，也会因 publisher/作者不同而拿到不同键，互不串。
+    # ⚠ 不能用 dc:date：实测它是构建日期（同一本书 v3→v13 每次重建都变），并入键会让跨版本保留失效。
+    sig = "\n".join([
+        book.meta.get("title") or "",
+        book.meta.get("creator") or "",
+        book.meta.get("publisher") or "",
+    ]).strip()
+    book_id = hashlib.sha1(sig.encode("utf-8")).hexdigest()[:12]
+
     data = {
         "meta": book.meta,
+        "bookId": book_id,
         "css": css_blocks,
         "chapters": chapters,
-        "toc": collapse_toc(chapters),
+        "toc": nested_toc(book, chapters) or collapse_toc(chapters),
         "report": {"groups": report.groups(), "counts": report.counts(), "stats": stats},
         "generated": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
