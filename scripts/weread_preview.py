@@ -1654,28 +1654,53 @@ __ANNO_HTML__
 __ANNO_JS__
 <!-- fn-popup-shim: 微信读书原生「点注字角标弹注释框」的本地预览模拟（light DOM 弹层 + document 捕获阶段监听，跨 Shadow DOM 生效） -->
 <style id="fn-popup-style">
-#fn-popover{position:fixed;z-index:99999;max-width:80vw;max-height:62vh;overflow:auto;
+/* 蒙层：与目录面板抽屉的 .backdrop 同色同层级语义（rgba(0,0,0,.38) 全屏） */
+#fn-mask{position:fixed;inset:0;background:rgba(0,0,0,.38);z-index:99998;display:none;}
+/* 弹框本体不设 overflow，否则指向角标的尖角会被裁掉；滚动交给内层 .fn-scroll */
+#fn-popover{position:fixed;z-index:99999;max-width:80vw;
   background:#fffdf7;border:1px solid #e0c9a6;border-radius:10px;
-  box-shadow:0 6px 24px rgba(120,80,20,.22);padding:14px 16px 12px;
+  box-shadow:0 8px 28px rgba(120,80,20,.26);
   font-size:15px;line-height:1.75;color:#333;text-align:left;display:none;}
-#fn-popover .fn-close{position:absolute;top:2px;right:10px;cursor:pointer;color:#a08;font-size:18px;line-height:1;}
-#fn-popover .fn-body{margin-top:2px;padding-right:12px;}
-#fn-popover .fn-tag{display:inline-block;min-width:1.4em;text-align:center;
-  background:#e4711e;color:#fff;border-radius:50%;font-size:12px;padding:1px 4px;
-  margin-right:6px;vertical-align:middle;}
+#fn-popover .fn-scroll{max-height:58vh;overflow:auto;padding:16px 18px 14px;}
+#fn-popover .fn-close{position:absolute;top:0;right:8px;cursor:pointer;color:#b08a5a;
+  font-size:20px;line-height:1.2;font-family:-apple-system,"PingFang SC",sans-serif;z-index:2;}
+#fn-popover .fn-body{padding-right:14px;}
+/* 尖角：双层三角（外层描边色 + 内层填充色），由 JS 决定朝上/朝下并对准角标中心 */
+#fn-popover .fn-arrow{position:absolute;width:0;height:0;border-style:solid;
+  border-color:transparent;pointer-events:none;}
+#fn-popover .fn-arrow-b{border-width:9px;}
+#fn-popover .fn-arrow-f{border-width:8px;}
+#fn-popover.arrow-top .fn-arrow-b{border-top-width:0;border-bottom-color:#e0c9a6;top:-9px;}
+#fn-popover.arrow-top .fn-arrow-f{border-top-width:0;border-bottom-color:#fffdf7;top:-8px;}
+#fn-popover.arrow-bottom .fn-arrow-b{border-bottom-width:0;border-top-color:#e0c9a6;bottom:-9px;}
+#fn-popover.arrow-bottom .fn-arrow-f{border-bottom-width:0;border-top-color:#fffdf7;bottom:-8px;}
 </style>
 <script id="fn-popup-script">
 (function(){
+  var ARROW_W = 18;                      /* 三角总宽 = border-width 9 * 2 */
   function ensurePopover(){
     var p=document.getElementById('fn-popover');
     if(!p){
       p=document.createElement('div');p.id='fn-popover';
-      p.innerHTML='<span class="fn-close" title="关闭">×</span><div class="fn-body"></div>';
+      p.innerHTML='<span class="fn-close" title="关闭">×</span>'
+        + '<div class="fn-scroll"><div class="fn-body"></div></div>'
+        + '<span class="fn-arrow fn-arrow-b"></span><span class="fn-arrow fn-arrow-f"></span>';
       document.body.appendChild(p);
       p.querySelector('.fn-close').addEventListener('click',function(e){
-        e.stopPropagation();p.style.display='none';});
+        e.stopPropagation();hide();});
     }
     return p;
+  }
+  function ensureMask(){
+    var m=document.getElementById('fn-mask');
+    if(!m){m=document.createElement('div');m.id='fn-mask';document.body.appendChild(m);}
+    return m;
+  }
+  function hide(){
+    var p=document.getElementById('fn-popover');
+    var m=document.getElementById('fn-mask');
+    if(p)p.style.display='none';
+    if(m)m.style.display='none';
   }
   function findBadge(e){
     var path=e.composedPath?e.composedPath():[];
@@ -1690,26 +1715,47 @@ __ANNO_JS__
     e.preventDefault();e.stopPropagation();
     var alt=badge.getAttribute('alt')||'';
     var p=ensurePopover();
-    p.querySelector('.fn-body').innerHTML='<span class="fn-tag">注</span>'+alt.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    var m=ensureMask();
+    p.querySelector('.fn-body').innerHTML=alt.replace(/&/g,'&amp;').replace(/</g,'&lt;');
     p.style.display='block';
+    m.style.display='block';
     var r=badge.getBoundingClientRect();
-    var pw=p.offsetWidth,ph=p.offsetHeight;
-    var left=Math.min(r.left,window.innerWidth-pw-12);
-    var top=r.bottom+6;
-    if(top+ph>window.innerHeight)top=Math.max(12,r.top-ph-6);
-    p.style.left=Math.max(12,left)+'px';
-    p.style.top=top+'px';
+    var pw=p.offsetWidth, ph=p.offsetHeight;
+    var pl=Math.max(12, Math.min(r.left, window.innerWidth-pw-12));
+    var gap=10, top=r.bottom+gap, up=false;
+    /* 下方放不下且上方放得下 -> 翻到角标上方，尖角改为朝下 */
+    if(top+ph>window.innerHeight-12 && r.top-ph-gap>12){ up=true; top=r.top-ph-gap; }
+    p.classList.toggle('arrow-top', !up);
+    p.classList.toggle('arrow-bottom', up);
+    p.style.left=pl+'px';
+    p.style.top=Math.max(12,top)+'px';
+    /* 尖角水平对准角标中心，并夹在弹框圆角之内 */
+    var ax=r.left+r.width/2-pl-ARROW_W/2;
+    ax=Math.max(12, Math.min(ax, pw-12-ARROW_W));
+    var ab=p.querySelector('.fn-arrow-b'), af=p.querySelector('.fn-arrow-f');
+    if(ab)ab.style.left=ax+'px';
+    if(af)af.style.left=(ax+1)+'px';
   }
   document.addEventListener('click',onBadgeClick,true);
+  /* 点蒙层 / 空白处关闭（角标本身与弹框内部不关） */
   document.addEventListener('click',function(e){
     var p=document.getElementById('fn-popover');
     if(!p||p.style.display==='none')return;
     if(findBadge(e))return;
     if(p.contains(e.target))return;
-    p.style.display='none';
+    hide();
+  });
+  /* 滚动/缩放会让 fixed 弹框与角标错位，直接收起 */
+  window.addEventListener('scroll',function(e){
+    var p=document.getElementById('fn-popover');
+    if(p&&p.style.display==='block')hide();
+  },true);
+  window.addEventListener('resize',function(){
+    var p=document.getElementById('fn-popover');
+    if(p&&p.style.display==='block')hide();
   });
   document.addEventListener('keydown',function(e){
-    if(e.key==='Escape'){var p=document.getElementById('fn-popover');if(p)p.style.display='none';}
+    if(e.key==='Escape')hide();
   });
 })();
 </script>
