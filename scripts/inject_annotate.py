@@ -348,6 +348,7 @@ JS = r"""
   }
 
   var annoMode=true, curType='文字', pendingCtx=null, editingId=null;
+  var anchorRange=null;   /* 弹框打开时锚定的 live Range：滚动时据此重定位，让弹框跟着选中文字走 */
   var bList=null;
   /* 触屏设备用「选中后浮出批注按钮」；鼠标设备沿用 mouseup 自动弹窗 */
   /* 以「无 hover + 粗指针」判定手机/平板；桌面触屏笔记本仍是 hover:hover，不会误判成 FAB 模式 */
@@ -415,13 +416,13 @@ JS = r"""
           elemTag:block?block.tagName.toLowerCase():'',
           elemClass:block&&block.className?(''+block.className):'',
           figIndex:figIndexOf(block,sec)}},
+      range: range,
       rect: range ? range.getBoundingClientRect() : null,
       text: info.text
     };
   }
-  function openPop(rect){
-    var pop=document.getElementById('annoPop'); pop.style.display='block';
-    document.getElementById('annoSave').textContent='保存';
+  function placePop(rect){
+    var pop=document.getElementById('annoPop');
     if(rect){
       var x=Math.min(rect.left, window.innerWidth-300), y=rect.bottom+8;
       if(y>window.innerHeight-220)y=rect.top-226;
@@ -432,6 +433,11 @@ JS = r"""
     }
     /* 窄屏下 CSS 会把弹窗强制到底部安全区，这里的 left/top 只对桌面生效 */
   }
+  function openPop(rect){
+    var pop=document.getElementById('annoPop'); pop.style.display='block';
+    document.getElementById('annoSave').textContent='保存';
+    placePop(rect);
+  }
   /* 桌面：mouseup 后自动弹窗 */
   function onSelect(){
     editingId=null;   /* 进入新建态，避免复用上一次的编辑态 */
@@ -439,6 +445,7 @@ JS = r"""
     var cap=captureSelection();
     if(!cap){hidePop();return;}
     pendingCtx=cap.ctx;
+    anchorRange=cap.range||null;   /* 记住锚点 Range：滚动时让弹框跟着选中文字走 */
     document.getElementById('annoText').value='';
     document.getElementById('annoLoc').textContent=(cap.ctx.chapterTitle||'')+' · '+(cap.ctx.context.nearestHeading||'(章首)');
     openPop(cap.rect);
@@ -448,7 +455,7 @@ JS = r"""
   /* 触屏：点浮出的「批注」按钮才弹窗（不读活选区，点按钮后选区可能已消失） */
   function onFabTap(){
     if(!pendingCtx) return;
-    editingId=null;
+    editingId=null; anchorRange=null;   /* 触屏路径弹窗由 CSS 固定在底部，不做滚动跟随 */
     document.getElementById('annoText').value='';
     setType(curType); markSeg('annoType',curType);
     document.getElementById('annoLoc').textContent=(pendingCtx.chapterTitle||'')+' · '+(pendingCtx.context.nearestHeading||'(章首)');
@@ -468,7 +475,7 @@ JS = r"""
   function hidePop(){
     var p=document.getElementById('annoPop'); if(p)p.style.display='none';
     hideFab(); lastSelText='';
-    pendingCtx=null; editingId=null;
+    pendingCtx=null; editingId=null; anchorRange=null;
   }
 
   function setType(v){curType=v; markSeg('annoType',v);}
@@ -544,6 +551,38 @@ JS = r"""
     /* 滚动后选区相对视口位置失效 → 收起 FAB */
     window.addEventListener('scroll', hideFab, {passive:true, capture:true});
     s.addEventListener('scroll', hideFab, {passive:true});
+
+    /* 滚动跟随：桌面弹框打开时按锚点 Range 实时重定位，跟着选中文字一起走。
+       scroll 不冒泡，但 capture 阶段对 Shadow 内后代有效（同上方 hideFab 的挂法）。 */
+    var followPending=false;
+    function followScroll(){
+      var pop=document.getElementById('annoPop');
+      if(!pop || pop.style.display==='none') return;
+      if(!anchorRange) return;                       /* 编辑态等无锚点弹框：原地不动，不跟随也不关闭 */
+      if(anchorRange.collapsed){ hidePop(); return; }
+      if(followPending) return;
+      followPending=true;
+      requestAnimationFrame(function(){
+        followPending=false;
+        var p=document.getElementById('annoPop');
+        if(!p || p.style.display==='none') return;
+        try{ if(anchorRange && !anchorRange.collapsed) placePop(anchorRange.getBoundingClientRect()); }
+        catch(e){ hidePop(); }   /* Range 已随 DOM 变化失效：直接收起 */
+      });
+    }
+    window.addEventListener('scroll', followScroll, {passive:true, capture:true});
+    s.addEventListener('scroll', followScroll, {passive:true});
+
+    /* 点击弹框外部（顶栏/正文空白/批注面板等）即关闭；弹框内部与触屏 FAB 除外。
+       在正文按下鼠标会先关旧弹框——若随后选出了新文字，mouseup 的 onSelect 会再弹新框。 */
+    document.addEventListener('mousedown', function(e){
+      var pop=document.getElementById('annoPop');
+      if(!pop || pop.style.display==='none') return;
+      var t=e.target;
+      if(pop.contains(t)) return;
+      if(fab && fab.contains && fab.contains(t)) return;
+      hidePop();
+    }, true);
 
     /* iOS 键盘弹出：把底部弹窗抬到键盘上沿（--anno-kb 由 CSS 的 calc 读取） */
     if(IS_TOUCH && window.visualViewport){
@@ -742,7 +781,7 @@ JS = r"""
   /* 编辑：复用弹窗，预填备注+类型；保存时 annoSave 走「更新」分支（不再新建） */
   function startEdit(anno){
     if(!anno)return;
-    editingId=anno.id; pendingCtx=null;
+    editingId=anno.id; pendingCtx=null; anchorRange=null;   /* 编辑态无选区锚点，不做滚动跟随 */
     var pop=document.getElementById('annoPop');
     document.getElementById('annoText').value=anno.comment||'';
     setType(anno.type||'文字');

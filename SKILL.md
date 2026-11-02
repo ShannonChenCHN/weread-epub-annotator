@@ -55,6 +55,8 @@ python3 ~/.workbuddy/skills/weread-epub-preview/scripts/weread_preview.py <book.
   否则 body 被全局 `height:100%` 锁成一屏高，滚动超过一屏后顶栏会被「拽走」）。
 - **选中即批注（内置，默认开）**：预览页顶栏默认带「标注 / 批注(n)」两个按钮（内联 SVG 图标：铅笔 / 列表）。
   - **桌面（鼠标）**：开启「标注」后，在正文选中文字或图片 → 自动弹批注框（类型 文字/图片/版式 + 备注）。
+    弹框按锚点 Range 跟随滚动（跟着选中文字一起走）；点击弹框外任意区域（顶栏/正文空白/面板）即关闭；
+    编辑态弹框无锚点，原地不跟随。
   - **手机/平板（无 hover + 粗指针）**：长按选中文字 → 浮出小「批注」按钮 → 点它才弹批注框；
     弹窗固定在底部安全区、textarea 16px（防 iOS 聚焦缩放）、键盘弹出时自动上抬。
     选区读取走多策略：`Selection.getComposedRanges`（Safari 17+）→ `shadowRoot.getSelection`（Chromium）
