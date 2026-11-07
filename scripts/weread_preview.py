@@ -1166,6 +1166,20 @@ select,input[type=text]{font:inherit;color:var(--ui-fg);background:transparent;
 .btn{font:inherit;color:var(--ui-fg);background:transparent;border:1px solid var(--ui-line);
   border-radius:6px;padding:4px 10px;cursor:pointer}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.4;cursor:default}
+.btn:disabled:hover{border-color:var(--ui-line);color:var(--ui-fg)}
+/* 移动端适配（2026-11-07）：触屏没有鼠标，:hover 会在点完按钮后一直「粘住」，
+   看起来像被选中。无 hover 能力的设备上取消 hover 变色，只保留按下瞬间的
+   :active 高亮；同时去掉 iOS 的系统点击灰块，让按下反馈统一。桌面不受影响。 */
+@media (hover: none){
+  .btn{-webkit-tap-highlight-color:transparent}
+  .btn:hover:not(:disabled){border-color:var(--ui-line);color:var(--ui-fg);background:transparent}
+  .btn:active:not(:disabled){border-color:var(--accent);color:var(--accent);background:rgba(59,109,245,.12)}
+}
+/* 线性翻页：当前 spine 序号 / 总数 / 文件名。目录只列 nav 条目，
+   「不进目录」的文件（章扉页后的导言页等）靠这个页码确认落点 */
+.pager{font-size:11.5px;color:var(--ui-fg2);font-variant-numeric:tabular-nums;
+  white-space:nowrap;max-width:34ch;overflow:hidden;text-overflow:ellipsis}
 /* 面板关闭按钮（与批注面板关闭按钮样式统一） */
 .panel-close{border:1px solid #e3e5e9;background:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font:inherit;color:var(--ui-fg)}
 .panel-close:hover{border-color:#3b6df5;color:#3b6df5}
@@ -1273,6 +1287,9 @@ __ANNO_CSS__
   <div class="brand">微信读书 · 本地预览<small>__SUB__</small></div>
   <button class="btn mtoggle" id="mnav">目录</button>
   <button class="btn mtoggle" id="minfo">说明</button>
+  <button class="btn" id="mprev" title="按 spine 顺序翻到上一页">‹ 上一页</button>
+  <button class="btn" id="mnext" title="按 spine 顺序翻到下一页">下一页 ›</button>
+  <span class="pager" id="pager"></span>
 </header>
 
 <div class="backdrop" id="backdrop"></div>
@@ -1541,7 +1558,37 @@ function mount(i, targetTitle){
     var _el = findHeading(sec, targetTitle);
     if(_el && !isFirstHeading(sec, _el)){ flashEl(_el); scrollToHeading(sec, _el); }
   }
+  updatePager();
+  /* 同步深链：点目录 / 线性翻页后 URL 也指向当前 spine，刷新或复制链接可复现。
+     file:// / 沙箱 iframe 下 replaceState 可能抛 SecurityError，忽略即可。 */
+  try { history.replaceState(null, '', '#c=' + i); } catch(e){}
 }
+
+/* ---- 按 spine 顺序线性翻页 --------------------------------------------
+   目录抽屉只列 nav/ncx 条目。EPUB 里「不进目录」的 spine 文件（章扉页后的
+   题记 / 章导言页、导论导言页、封面等）真机会按线性阅读顺序翻到，但预览页
+   过去只能手改 #c=N 深链，UI 上完全不可达。这两个按钮补齐线性阅读路径，
+   不改变目录结构，也不改 EPUB 本体。 */
+function updatePager(){
+  var n = DATA.chapters.length;
+  var el = document.getElementById('pager');
+  if(el){
+    var ch = DATA.chapters[active] || {};
+    var base = String(ch.file || '').split('/').pop();
+    el.textContent = (active+1) + ' / ' + n + (base ? ' · ' + base : '');
+    el.title = ch.file || '';
+  }
+  var p = document.getElementById('mprev'), nx = document.getElementById('mnext');
+  if(p) p.disabled = (active <= 0);
+  if(nx) nx.disabled = (active >= n-1);
+}
+function goSpine(delta){
+  var i = Math.max(0, Math.min(DATA.chapters.length-1, active + delta));
+  if(i === active) return;
+  mount(i);
+}
+on('mprev','click', function(){ goSpine(-1); });
+on('mnext','click', function(){ goSpine(1); });
 
 /* ---- TOC（两级：章 / 节；无嵌套时回落扁平列表）---- */
 function renderToc(){
