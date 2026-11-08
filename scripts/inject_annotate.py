@@ -8,8 +8,9 @@ inject_annotate.py —— 给 weread-epub-preview 生成的 index.html 注入「
 
 特性:
   * 不修改 EPUB 源，只改预览页 HTML（--undo 可完整移除，可逆）。
-  * 注入后：顶栏出现「标注」「批注(n)」两个按钮（内联 SVG 图标）。
-      - 桌面：打开「标注」模式 → 用鼠标选中文字/图片 → 自动弹出批注框（类型 文字/图片/版式 + 备注）→ 保存。
+  * 注入后：顶栏出现「批注(n)」一个按钮（内联 SVG 图标，打开批注列表面板）。
+      - 顶栏不再渲染「标注」模式切换按钮（按需求已移除）；批注模式默认开启（等价于原按钮常开态）。
+      - 桌面：直接用鼠标选中文字/图片 → 自动弹出批注框（类型 文字/图片/版式 + 备注）→ 保存。
       - 手机/平板（无 hover + 粗指针）：长按选中文字 → 浮出小「批注」按钮 → 点它才弹批注框。
         选区读取多策略：getComposedRanges（Safari 17+）→ shadowRoot.getSelection（Chromium）
         → window.getSelection → 纯文本降级；窄屏弹窗固定底部安全区、textarea 16px 防 iOS 缩放。
@@ -54,8 +55,6 @@ CSS = r"""
 .anno-pop .save{background:#3b6df5;color:#fff;border:1px solid #3b6df5;border-radius:6px;padding:4px 12px;cursor:pointer;font:inherit}
 .anno-pop .cancel{background:#fff;border:1px solid #e3e5e9;border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit}
 .anno-pop .meta{color:#8b9098;font-size:11px}
-/* 顶栏「标注」按钮：选中态与「说明」按钮 .mtoggle[aria-pressed=true] 完全一致 */
-.btn-anno-mode[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:rgba(59,109,245,.08)}
 /* 顶栏按钮内的 SVG 图标：与文字基线对齐、随按钮文字色（含选中态）变化 */
 .topbar .btn svg{width:14px;height:14px;vertical-align:-2px;margin-right:4px}
 .anno-panel{position:fixed;top:0;right:0;height:100%;width:330px;background:#fff;color:#1c1f24;
@@ -361,15 +360,14 @@ JS = r"""
   var SVG_LIST='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
 
   /* ---- 顶栏按钮（兼容新旧两版顶栏，直接挂到 .topbar，窄屏也可见） ---- */
+  /* 注：顶栏不再渲染「标注」模式切换按钮（按需求移除），保留「批注(n)」列表面板入口；
+         annoMode 仍默认 true（等价于原按钮常开态），桌面选中文字可直接批注、触屏 FAB 仍可用。 */
   var topbar=document.querySelector('.topbar');
   if(topbar){
-    var bMode=document.createElement('button'); bMode.className='btn btn-anno-mode'; bMode.innerHTML=SVG_EDIT+' 标注';
-    bMode.style.marginLeft='auto';
-    bMode.setAttribute('aria-pressed', annoMode ? 'true' : 'false');
     bList=document.createElement('button'); bList.className='btn'; bList.innerHTML=SVG_LIST+' 批注(0)';
-    bMode.onclick=function(){annoMode=!annoMode; bMode.setAttribute('aria-pressed', annoMode ? 'true' : 'false'); if(!annoMode) hidePop();};
+    bList.style.marginLeft='auto';
     bList.onclick=function(){document.body.classList.remove('navopen','infoopen'); var p=document.getElementById('annoPanel'); p.classList.toggle('open'); renderList(); syncBackdrop();};
-    topbar.appendChild(bMode); topbar.appendChild(bList);
+    topbar.appendChild(bList);
   }
 
   /* ---- 工具 ---- */
@@ -799,7 +797,7 @@ JS = r"""
   }
   function renderList(){
     var list=document.getElementById('annoList'); var annos=load();
-    if(!annos.length){list.innerHTML='<div class="anno-empty">暂无批注。<br>打开「标注」，在正文选中文字/图片即可批注。</div>'; updateCount(); return;}
+    if(!annos.length){list.innerHTML='<div class="anno-empty">暂无批注。<br>在正文选中文字/图片即可批注。</div>'; updateCount(); return;}
     var groups={}; annos.forEach(function(a){(groups[a.file]=groups[a.file]||[]).push(a);});
     var html='';
     Object.keys(groups).forEach(function(f){
