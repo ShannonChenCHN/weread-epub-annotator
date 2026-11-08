@@ -65,7 +65,7 @@ python3 ~/.workbuddy/skills/weread-epub-preview/scripts/weread_preview.py <book.
     → `window.getSelection` → 纯文本降级（取当前章 + 文字片段作锚点）。
   - 批注按「源 xhtml 路径 + 文字片段 + 最近标题」定位（源码无 id 也能反查），存 localStorage，换章自动重绘左侧蓝色标记；
   「批注」面板每条右侧有「编辑 / 删除」SVG 图标按钮（编辑复用弹窗改备注与类型，删除直接撤掉标记与计数），
-  面板还支持跳转定位（滚动 + 精确子串闪烁高亮）、「复制」全部批注 Markdown、「导出」给 agent 的 MD 任务清单、清空。
+  面板还支持跳转定位（滚动 + 精确子串闪烁高亮）、「复制」全部批注 Markdown、「导出▾」下拉（Markdown 任务清单 / JSON 原始数据）、「导入」从 JSON 文件恢复批注（无损、可跨端口/机器）、清空。
   由 `--annotate`（默认开）/ `--no-annotate`（纯预览）控制；历史预览仍可用配套 `inject_annotate.py` 后处理注入。
   批注层只改预览页 HTML，**不碰 EPUB 源**；重跑预览会清掉注入层，但 localStorage 里的批注数据仍在浏览器侧。
 - 静态体检报告仍会生成 `weread-report.md` / `weread-report.json`（见上方产出表），只是预览页内不再内置报告抽屉。

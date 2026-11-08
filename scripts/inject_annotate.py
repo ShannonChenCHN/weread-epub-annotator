@@ -16,7 +16,7 @@ inject_annotate.py —— 给 weread-epub-preview 生成的 index.html 注入「
         → window.getSelection → 纯文本降级；窄屏弹窗固定底部安全区、textarea 16px 防 iOS 缩放。
       - 批注按「源 xhtml 文件路径 + 文字片段 + 最近标题」定位，存入 localStorage，
         换章自动重绘常驻标记（MutationObserver）。
-      - 「批注」面板可：点条目跳转定位并闪烁高亮、一键「复制」所有批注 (Markdown)、「导出」给 agent 的 MD 任务清单、清空。
+      - 「批注」面板可：点条目跳转定位并闪烁高亮、一键「复制」所有批注 (Markdown)、「导出▾」下拉（Markdown 任务清单 / JSON 原始数据）、「导入」从 JSON 文件恢复批注（无损、可跨端口/机器）、清空。
   * 锚点不依赖源码 id（源码正文元素本就无 id）；靠文字片段 + 最近标题即可反查源 xhtml。
 
 设计要点:
@@ -63,9 +63,15 @@ CSS = r"""
 .anno-panel.open{display:flex}
 .anno-panel header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #e3e5e9}
 .anno-panel header b{font-size:14px}
-.anno-panel .tools{margin-left:auto;display:flex;gap:6px}
+.anno-panel .tools{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
 .anno-panel .tools button{border:1px solid #e3e5e9;background:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font:inherit}
 .anno-panel .tools button:hover{border-color:#3b6df5;color:#3b6df5}
+.anno-panel .tools .exp-wrap{position:relative;display:inline-flex}
+.anno-panel .tools .anno-tool-btn{border:1px solid #e3e5e9;background:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font:inherit}
+.anno-panel .tools .anno-tool-btn:hover{border-color:#3b6df5;color:#3b6df5}
+.anno-export-menu{position:absolute;top:100%;right:0;margin-top:4px;min-width:150px;background:#fff;border:1px solid #e3e5e9;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.12);z-index:20;padding:4px}
+.anno-export-item{padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;white-space:nowrap;color:#1c1f24}
+.anno-export-item:hover{background:#f2f4f8;color:#3b6df5}
 .anno-panel .list{overflow:auto;padding:8px 10px 40px;flex:1}
 .anno-grp{margin:0 0 10px}
 .anno-grp h4{margin:6px 2px;font-size:12px;color:#61666e;word-break:break-all}
@@ -122,8 +128,16 @@ HTML = r"""
     <b>批注</b>
     <span class="tools">
       <button id="annoCopy" title="复制所有批注 (Markdown)">复制</button>
-      <button id="annoExportMd" title="导出给 agent 的任务清单 (Markdown)">导出</button>
+      <span class="exp-wrap">
+        <button id="annoExportBtn" class="anno-tool-btn" title="导出批注">导出▾</button>
+        <div id="annoExportMenu" class="anno-export-menu" style="display:none">
+          <div class="anno-export-item" data-fmt="md">Markdown 任务清单</div>
+          <div class="anno-export-item" data-fmt="json">JSON 原始数据</div>
+        </div>
+      </span>
+      <button id="annoImportJson" title="从 JSON 文件导入批注数据（解析失败会提示报错）">导入</button>
       <button id="annoClear" title="清空本书全部批注">清空</button>
+      <input type="file" id="annoImportJsonFile" accept=".json,application/json" style="display:none">
       <button class="panel-close" id="annoClose" title="关闭">✕</button>
     </span>
   </header>
@@ -906,10 +920,72 @@ JS = r"""
       setTimeout(function(){btn.textContent=ot;},1500);
     });
   });
-  document.getElementById('annoExportMd').onclick=function(){
-    download('annotations_for_agent.md',buildMd(load()),'text/markdown');
-  };
   document.getElementById('annoClear').onclick=function(){if(confirm('清空本书全部批注？')){STORE.set(LS_KEY,'[]');applyHighlights();renderList();}};
+
+  /* ---- 导出菜单：Markdown 任务清单 / JSON 原始数据 ---- */
+  (function(){
+    var btn=document.getElementById('annoExportBtn');
+    var menu=document.getElementById('annoExportMenu');
+    btn.addEventListener('click',function(e){ e.stopPropagation(); menu.style.display = (menu.style.display==='block'?'none':'block'); });
+    menu.addEventListener('click',function(e){ e.stopPropagation(); });
+    Array.prototype.forEach.call(menu.querySelectorAll('.anno-export-item'),function(it){
+      it.addEventListener('click',function(){
+        var fmt=it.getAttribute('data-fmt');
+        if(fmt==='md'){ download('annotations_for_agent.md', buildMd(load()), 'text/markdown'); }
+        else if(fmt==='json'){ download('annotations.json', buildJson(), 'application/json'); }
+        menu.style.display='none';
+      });
+    });
+    document.addEventListener('click',function(){ menu.style.display='none'; });
+  })();
+  /* ---- JSON 原始数据导出/导入（无损，跨端口/机器迁移） ---- */
+  function buildJson(){
+    return JSON.stringify({
+      version:1, bookId:BOOK_ID,
+      exportedAt:new Date().toISOString(),
+      annotations:load()
+    }, null, 2);
+  }
+  function parseJson(txt){
+    var parsed;
+    try{ parsed=JSON.parse(txt); }
+    catch(e){ throw new Error('文件不是合法 JSON，解析失败：'+(e&&e.message?e.message:e)); }
+    var arr = Array.isArray(parsed) ? parsed
+            : (parsed && Array.isArray(parsed.annotations) ? parsed.annotations : null);
+    if(!arr) throw new Error('文件格式不正确：应为 JSON 数组，或含 "annotations" 字段的对象');
+    if(!arr.length) throw new Error('该文件没有任何批注数据');
+    arr.forEach(function(a,idx){
+      if(!a || typeof a!=='object') throw new Error('第 '+(idx+1)+' 条批注格式不正确（不是对象）');
+      if(!a.id) a.id=genId();
+      if(!a.bookId) a.bookId=BOOK_ID;
+      if(!a.type) a.type='文字';
+      if(a.createdAt==null) a.createdAt=new Date().toISOString();
+    });
+    return arr;
+  }
+  document.getElementById('annoImportJson').onclick=function(){
+    document.getElementById('annoImportJsonFile').click();
+  };
+  document.getElementById('annoImportJsonFile').addEventListener('change',function(e){
+    var f=e.target.files&&e.target.files[0]; if(!f) return;
+    var reader=new FileReader();
+    reader.onload=function(){
+      try{
+        var imported=parseJson(reader.result);  /* 解析/校验在此抛出明确错误 */
+        var annos=load(), seen={}, added=0;
+        annos.forEach(function(a){ if(a.id) seen[a.id]=1; });
+        imported.forEach(function(a){ if(!seen[a.id]){ annos.push(a); seen[a.id]=1; added++; } });
+        save(annos); applyHighlights(); renderList(); updateCount();
+        alert('已导入 '+added+' 条新批注（共 '+annos.length+' 条，重复 id 已跳过）。');
+      }catch(err){
+        alert('导入失败：'+(err&&err.message?err.message:err));
+      }finally{
+        e.target.value=''; /* 允许重复导入同一文件 */
+      }
+    };
+    reader.onerror=function(){ alert('读取文件失败。'); e.target.value=''; };
+    reader.readAsText(f,'utf-8');
+  });
 
   /* ---- 初始化（等引擎把内容挂进 shadow） ---- */
   function start(){var s=getSR(); if(s&&s.querySelector('.wr-secs')){ensureShadowCss();applyHighlights();renderList();}else setTimeout(start,80);}
